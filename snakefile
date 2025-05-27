@@ -1,0 +1,1219 @@
+# Snakefile
+
+############################################################
+#  CONFIGURATION
+############################################################
+import os
+with open("/oscar/data/jsedivy/jienli/Hayflick/atac_analysis_H1/ATAC_TE-Seq/cwd_debug.txt", "w") as f:
+    f.write("Snakemake working directory at parse time: " + os.getcwd() + "\n")
+os.chdir("/oscar/data/jsedivy/jienli/Hayflick/atac_analysis_H1/ATAC_TE-Seq")
+
+# Load YAML config:
+# import os
+# configfile: os.path.join(os.path.dirname(__file__), "config.yaml")
+# configfile: "config.yaml"
+configfile: "/oscar/data/jsedivy/jienli/Hayflick/atac_analysis_H1/ATAC_TE-Seq/config.yaml"
+
+
+# for sample in config["samples"]:
+#     print("Parsed sample:", sample)
+
+# Samples should be defined in config.yaml, e.g.:
+# samples:
+#   rep1:
+#     fastq: "fastq/rep1.SE.fastq.gz"
+#     paired: false
+#   rep2:
+#     fastq1: "fastq/rep2.R1.fastq.gz"
+#     fastq2: "fastq/rep2.R2.fastq.gz"
+#     paired: true
+
+SAMPLES = config["samples"]
+SAMPLES_flat = [s for group in SAMPLES.values() for s in group]    # flattens the list of samples to 1D list of samples
+
+SAMPLES_FASTQ_DIR = config["sample_fastq_dir"]
+
+BWT2_IDX    = config["bwt2_index"]
+GENOME_SIZE = config["genome_size"]
+CHRSIZES    = config["chrom_sizes"]
+# BLACKLIST   = config["blacklist"]
+# REF_FA      = config["reference_fasta"]
+# TSS_BED     = config["tss_bed"]
+# DNASE_BED   = config["dnase_bed"]
+# ENH_BED     = config["enhancer_bed"]
+# PROM_BED    = config["promoter_bed"]
+SUBSAMPLE   = config.get("subsample_reads", 25000000)
+THREADS     = config.get("threads", 8)
+MEM_MB      = config.get("mem_mb", 8000)
+# IDR_THRESH  = config.get("idr_threshold", 0.05)
+SMOOTH_WIN  = config.get("smooth_window", 150)
+
+ADAPTOR_ERR_RATE = config.get("adaptor_err_rate", 0.2)
+MULTIMAPPING = config.get("multimapping", 100)
+
+MACS2_PVAL_THRESHOLD = config.get("macs2_pval_threshold", 1e-2)
+############################################################
+#  RULE: aggregate final targets
+############################################################
+
+# rule all:
+#     input:
+#         # flagstat QC for each rep
+#         expand("qc/{sample}.flagstat.qc", sample=SAMPLES),
+#         # peak calls (narrowPeak) for each rep
+#         expand("peaks/{sample}.narrowPeak.gz", sample=SAMPLES),
+#         # IDR‐filtered peaks (conservative) for pooled
+#         "idr/pooled.conservative.narrowPeak.gz",
+#         # bigWig tracks
+#         expand("tracks/{sample}.positive.bigwig", sample=SAMPLES),
+#         expand("tracks/{sample}.negative.bigwig", sample=SAMPLES),
+#         # TSS enrichment plots
+#         expand("tss/{sample}.tss_enrich.png", sample=SAMPLES)
+
+
+# actual all
+# rule all:
+#     input:
+#         # flagstat QC for each rep
+#         expand("qc/{sample}.PE.flagstat.qc", sample=SAMPLES_flat),
+#         # peak calls (narrowPeak) for each rep
+#         expand("peaks/{sample}.narrowPeak.gz", sample=SAMPLES_flat)
+
+
+# # all except 92 (post PE.bam for now)
+# SAMPLES_flat_ = ["SRR14646390", "SRR14646391", "SRR14646392", "SRR14646405", "SRR14646406"]
+# rule all:
+#     input:
+#         # flagstat QC for each rep
+#         expand("qc/{sample}.PE.flagstat.qc", sample=SAMPLES_flat_),
+#         # peak calls (narrowPeak) for each rep
+#         expand("peaks/{sample}.narrowPeak.gz", sample=SAMPLES_flat_),
+#         expand("filtered/{sample}.PE.final.bam.bai", sample=SAMPLES_flat_),
+#         expand("tracks/{sample}.fc.signal.bw", sample=SAMPLES_flat_),
+#         expand("tracks/{sample}.pval.signal.bw", sample=SAMPLES_flat_),
+#         "diff/deseq2_results.csv"
+
+
+# # only 92: still at bowtie2 for now
+# SAMPLES_flat__ = ["SRR14646392"]
+# rule all_92:
+#     input:
+#         # flagstat QC for each rep
+#         expand("qc/{sample}.PE.flagstat.qc", sample=SAMPLES_flat__),
+#         # peak calls (narrowPeak) for each rep
+#         expand("peaks/{sample}.narrowPeak.gz", sample=SAMPLES_flat__),
+#         expand("filtered/{sample}.PE.final.bam.bai", sample=SAMPLES_flat__),
+#         expand("tracks/{sample}.fc.signal.bw", sample=SAMPLES_flat__),
+#         expand("tracks/{sample}.pval.signal.bw", sample=SAMPLES_flat__)
+
+
+
+# all except 92 (post PE.bam for now)
+SAMPLES_flat_ = SAMPLES_flat
+rule all:
+    input:
+        # flagstat QC for each rep
+        expand("qc/{sample}.PE.flagstat.qc", sample=SAMPLES_flat_),
+        # peak calls (narrowPeak) for each rep
+        expand("peaks/{sample}.narrowPeak.gz", sample=SAMPLES_flat_),
+        expand("filtered/{sample}.PE.final.bam.bai", sample=SAMPLES_flat_),
+        expand("tracks/{sample}.fc.signal.bw", sample=SAMPLES_flat_),
+        expand("tracks/{sample}.pval.signal.bw", sample=SAMPLES_flat_)
+
+############################################################
+#  0a. Adapter detection                              
+############################################################
+
+#if paried end reads, use the first read
+# otherwise use the single end read
+rule detect_adapter:
+    input:
+        # fastq = lambda wildcards: (
+        #     SAMPLES[wildcards.sample]["fastq"]
+        #     if not SAMPLES[wildcards.sample].get("paired", False)
+        #     else SAMPLES[wildcards.sample]["fastq1"]
+        # )
+        fastq = lambda wc: os.path.join(SAMPLES_FASTQ_DIR, f"{wc.sample}_1.fastq.gz")
+    output:
+        "adapters/{sample}.adapter.txt"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    shell:
+        """
+        mkdir -p adapters
+        python3 {config[script_dir]}/detect_adapter.py {input.fastq} > {output}
+        """
+
+
+############################################################
+#  0b. Adapter trimming                                
+############################################################
+
+rule trim_adapters_SE:
+    input:
+        fastq = lambda wc: os.path.join(SAMPLES_FASTQ_DIR, f"{wc.sample}.fastq.gz"),
+        adapter = rules.detect_adapter.output
+    params:
+        adaptor_err_rate = ADAPTOR_ERR_RATE
+    output:
+        "trimmed/{sample}.trim.fastq.gz"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    shell:
+        """
+        mkdir -p trimmed
+        cutadapt -m 5 -e {params.adaptor_err_rate} \
+            -a $(cat {input.adapter}) --cores {threads} --output {output} {input.fastq}
+        """
+
+rule trim_adapters_PE:
+    input:
+        fastq1 = lambda wc: os.path.join(SAMPLES_FASTQ_DIR, f"{wc.sample}_1.fastq.gz"),
+        fastq2 = lambda wc: os.path.join(SAMPLES_FASTQ_DIR, f"{wc.sample}_2.fastq.gz"),
+        adapter = rules.detect_adapter.output
+    params:
+        adaptor_err_rate = ADAPTOR_ERR_RATE
+    output:
+        trimmed_r1 = "trimmed/{sample}.R1.trim.fastq.gz",
+        trimmed_r2 = "trimmed/{sample}.R2.trim.fastq.gz"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    shell:
+        """
+        mkdir -p trimmed
+        cutadapt -m 5 -e {params.adaptor_err_rate} \
+            -a $(cat {input.adapter}) -A $(cat {input.adapter}) \
+            -o {output.trimmed_r1} -p {output.trimmed_r2} \
+            --cores {threads} \
+            {input.fastq1} {input.fastq2}
+        """
+
+
+############################################################
+#  1a. Alignment (SE / PE)                        
+############################################################
+
+rule bowtie2_align_SE:
+    input:
+        fastq = "trimmed/{sample}.trim.fastq.gz"
+    output:
+        bam = "aligned/{sample}.SE.bam",
+        flagstat = "qc/{sample}.SE.flagstat.qc",
+        non_mito = "aligned/{sample}.SE.non_mito.bam"
+    params:
+        multimapping = MULTIMAPPING,
+        bwt2_index = BWT2_IDX
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        mkdir -p aligned qc
+        bowtie2 -k {params.multimapping} --mm -x {params.bwt2_index} --threads {threads} -U <(zcat -f {input.fastq}) 2> aligned/{wildcards.sample}.align.log \
+          | samtools view -Su - \
+          | samtools sort -@ {threads} -o {output.bam}
+
+        # flagstat QC
+        samtools sort -n -@ {threads} {output.bam} -O SAM \
+          | SAMstats --sorted_sam_file - --outf {output.flagstat}
+
+        # extract non‐mito
+        samtools idxstats {output.bam} \
+          | cut -f 1 \
+          | grep -v -P "^chrM$" \
+          | xargs samtools view {output.bam} -@ {threads} -b \
+          > {output.non_mito}
+        """
+
+
+
+
+# New: Bowtie2 mapping PE reads to unsorted BAM
+rule bowtie2_map_PE:
+    input:
+        fastq1 = "trimmed/{sample}.R1.trim.fastq.gz",
+        fastq2 = "trimmed/{sample}.R2.trim.fastq.gz"
+    output:
+        bam_unsorted = temp("aligned/{sample}.unsorted.bam")
+    params:
+        multimapping = MULTIMAPPING,
+        bwt2_index = BWT2_IDX
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        mkdir -p aligned
+        
+        bowtie2 -q -k {params.multimapping} -X2000 --mm -x {params.bwt2_index} --threads {threads} \
+          -1 {input.fastq1} -2 {input.fastq2} 2> aligned/{wildcards.sample}.align.log \
+          | samtools view -Su - > {output.bam_unsorted}
+        """
+
+# New: Sort BAM
+rule sort_bam_PE:
+    input:
+        bam_unsorted = "aligned/{sample}.unsorted.bam"
+    output:
+        bam = "aligned/{sample}.PE.bam"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        m_per_thread=$(( ({resources.mem_mb} * 8 / 10) / {threads} ))M
+
+        samtools sort -@ {threads} -m $m_per_thread -o {output.bam} {input.bam_unsorted}
+        """
+
+
+# New: Flagstat QC
+rule flagstat_qc_PE:
+    input:
+        bam = "aligned/{sample}.PE.bam"
+    output:
+        flagstat = "qc/{sample}.PE.flagstat.qc"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
+        mkdir -p qc
+        samtools sort -n -@ {threads} -m $m_per_thread {input.bam} -O SAM \
+          | SAMstats --sorted_sam_file - --outf {output.flagstat}
+        """
+
+# New: Extract non-mito reads
+rule extract_non_mito_PE:
+    input:
+        bam = "aligned/{sample}.PE.bam"
+    output:
+        non_mito = "aligned/{sample}.PE.non_mito.bam"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        samtools view -@ {threads} -b {input.bam} $(samtools idxstats {input.bam} | cut -f 1 | grep -v "^chrM$") > {output.non_mito}
+        """
+
+
+
+
+        
+############################################################
+#  1c. Fraction mitochondrial reads                    
+############################################################
+
+rule frac_mito:
+    input:
+        non_mito = lambda wc: (
+            f"aligned/{wc.sample}.PE.non_mito.bam" if SAMPLES[wc.sample]["paired"]
+            else f"aligned/{wc.sample}.SE.non_mito.bam"
+        ),
+        mito = lambda wc: (
+            f"aligned/{wc.sample}.PE.bam" if SAMPLES[wc.sample]["paired"]
+            else f"aligned/{wc.sample}.SE.bam"
+        )
+    output:
+        "qc/{sample}.frac_mito.txt"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        mkdir -p qc
+        samtools sort -n -@ {threads} {input.non_mito} -O SAM \
+          | SAMstats --sorted_sam_file - --outf qc/{wildcards.sample}.nonmito.qc
+
+        samtools sort -n -@ {threads} {input.mito} -O SAM \
+          | SAMstats --sorted_sam_file - --outf qc/{wildcards.sample}.mito.qc
+
+        Rn=$(awk '$2=="mapped"{sum+=$3}END{{print sum}}' qc/{wildcards.sample}.nonmito.qc)
+        Rm=$(awk '$2=="mapped"{sum+=$3}END{{print sum}}' qc/{wildcards.sample}.mito.qc)
+        echo -e "$Rm\t$Rn\t$(echo "$Rm/($Rm+$Rn)" | bc -l)" > {output}
+        """
+
+
+############################################################
+#  1b. Post‐alignment filtering (dedup + MAPQ)          
+############################################################
+
+# rule dedup_filter_PE:
+#     input:
+#         bam = "aligned/{sample}.PE.bam"
+#     output:
+#         final_bam = "filtered/{sample}.PE.final.bam",
+#         dup_metrics = "qc/{sample}.PE.dup.qc",
+#         pbc = "qc/{sample}.PE.pbc.qc"
+#     threads: THREADS
+#     params:
+#         MAPQ_THRESH = 20
+#     resources:
+#         mem_mb=MEM_MB
+#     conda:
+#         "ATAC_Core"
+#     shell: 
+#         """
+#         m_per_thread=$(( ({resources.mem_mb} * 8 / 10) / {threads} ))M
+
+#         # Remove unmapped, mate unmapped, QC-fail, keep properly paired (-f 2)
+#         samtools view -F 524 -f 2 -q {params.MAPQ_THRESH} -u {input.bam} \
+#             | samtools sort -n -@ {threads} -m $m_per_thread -o filtered/{wildcards.sample}.nmsrt.bam
+
+
+#         # Assign multimappers (remove all that maps to more than 1000 loci and keeps the rests the same) and fixmate
+#         samtools view -h filtered/{wildcards.sample}.nmsrt.bam \
+#             | python3 {config[script_dir]}/assign_multimappers.py -k {MULTIMAPPING} --paired-end \
+#             | samtools fixmate - filtered/{wildcards.sample}.fixmate.bam
+
+#         # ====================================================================    
+#         # NOTE: This is a major change from the original script, which used fixmate -r, and removes all secondary reads.
+#         # ====================================================================    
+
+#         # Remove orphan pairs and discordant mapping (purpose of the original code from ENCODE)
+#         # But here, primarily this just sorts the reads by coordinate (previousely sorted by name)
+
+#         samtools view -F 524 -f 2 -u filtered/{wildcards.sample}.fixmate.bam \
+#             | samtools sort -@ {threads} -m $m_per_thread -o filtered/{wildcards.sample}.filt.bam
+#         rm filtered/{wildcards.sample}.nmsrt.bam filtered/{wildcards.sample}.fixmate.bam
+
+        
+#         # Mark PCR duplicates (only marks the FLAG, does not remove them)
+#         java -Xmx4G -jar {config[picard]} MarkDuplicates \
+#             INPUT=filtered/{wildcards.sample}.filt.bam \
+#             OUTPUT=filtered/{wildcards.sample}.dupmark.bam \
+#             METRICS_FILE={output.dup_metrics} \
+#             VALIDATION_STRINGENCY=LENIENT ASSUME_SORTED=true \
+#             REMOVE_DUPLICATES=false
+#         mv filtered/{wildcards.sample}.dupmark.bam filtered/{wildcards.sample}.filt.bam
+
+#         # Remove duplicates and save final BAM
+#         # ====================================================================    
+#         # NOTE: This is a major change from the original script, which used -F 1804, and removes all PCR duplicates.
+#         # ====================================================================    
+#         # In our version, this only compress the bam (-u --> -b)
+#         samtools view -F 524 -f 2 -b filtered/{wildcards.sample}.filt.bam \
+#             > {output.final_bam}
+#         # TODO consolidate this
+
+#         samtools index {output.final_bam}
+
+#         # Flagstat QC
+#         samtools sort -n --threads {threads} -m $m_per_thread {output.final_bam} -O SAM \
+#             | SAMstats --sorted_sam_file - --outf {output.final_bam}.flagstat.qc
+
+#         # Library complexity (PBC)
+#         # mt = Total number of read pairs
+#         # m0 = Distinct read pairs (unique fragments)
+#         # m1 = Fragments seen once (singleton)
+#         # m2 = Fragments seen twice
+#         # m0/mt: NRF = Non-redundant fraction
+#         # m1/m0: PBC1 = Proportion of unique among distinct
+#         # m1/m2: PBC2 = Singleton-to-doubleton ratio
+#         samtools sort -n -@ {threads} -m $m_per_thread filtered/{wildcards.sample}.filt.bam -o filtered/{wildcards.sample}.srt.tmp.bam
+#         bedtools bamtobed -bedpe -i filtered/{wildcards.sample}.srt.tmp.bam \
+#             | awk 'BEGIN{{OFS="\\t"}}{{print $1,$2,$4,$6,$9,$10}}' \
+#             | grep -v 'chrM' \
+#             | sort | uniq -c \
+#             | awk 'BEGIN{{mt=0;m0=0;m1=0;m2=0}} \
+#             ($1==1){{m1+=1}} ($1==2){{m2+=1}} {{m0+=1;mt+=$1}} \
+#             END{{printf "%d\\t%d\\t%d\\t%d\\t%f\\t%f\\t%f\\n",mt,m0,m1,m2,m0/mt,m1/m0,m1/m2}}' \
+#             > {output.pbc}
+#         rm filtered/{wildcards.sample}.srt.tmp.bam filtered/{wildcards.sample}.filt.bam
+#         """
+
+    
+# Step 1: Filter and name-sort paired reads
+rule filter_pairs_PE_dedup1:
+    input:
+        bam = "aligned/{sample}.PE.bam"
+    output:
+        nmsrt = "filtered/{sample}.nmsrt.bam"
+    threads: THREADS
+    resources:
+        mem_mb = MEM_MB
+    params:
+        MAPQ_THRESH = 20
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
+        samtools view -F 524 -f 2 -u {input.bam} \
+            | samtools sort -n -@ {threads} -m $m_per_thread -o {output.nmsrt}
+        """
+
+# Step 2: Assign multimappers and fixmate
+rule assign_multimappers_PE_dedup2:
+    input:
+        nmsrt = rules.filter_pairs_PE_dedup1.output.nmsrt
+    output:
+        fixmate = "filtered/{sample}.fixmate.bam"
+    threads: THREADS
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        # samtools view -h {input.nmsrt} \
+        #     | python3 {config[my_script_dir]}/assign_multimappers.py -k 1 --paired-end \
+        #     | samtools fixmate - {output.fixmate}
+        samtools view -h -F 780 {input.nmsrt} \
+            | samtools fixmate - {output.fixmate}
+        """
+        # This assign_multimappers.py script is a custom script that caps multimappers to 1 loci by randomly assigning one of the loci to the read.
+
+# Step 3: Remove orphans and coordinate-sort
+rule sort_coord_PE_dedup3:
+    input:
+        nmsrt = rules.filter_pairs_PE_dedup1.output.nmsrt,
+        fixmate = rules.assign_multimappers_PE_dedup2.output.fixmate
+    output:
+        filt = "filtered/{sample}.filt.bam"
+    threads: THREADS
+    resources:
+        mem_mb = MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
+        samtools view -F 524 -f 2 -u {input.fixmate} \
+            | samtools sort -@ {threads} -m $m_per_thread -o {output.filt}
+        rm {input.nmsrt} {input.fixmate}
+        """
+
+# Step 4: Mark PCR duplicates
+rule mark_duplicates_PE_dedup4:
+    input:
+        filt = rules.sort_coord_PE_dedup3.output.filt
+    output:
+        dupmark = "filtered/{sample}.dupmark.bam",
+        dup_metrics = "qc/{sample}.PE.dup.qc"
+    threads: THREADS
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        java -Xmx4G -jar {config[picard]} MarkDuplicates \
+            INPUT={input.filt} OUTPUT={output.dupmark} METRICS_FILE={output.dup_metrics} \
+            VALIDATION_STRINGENCY=LENIENT ASSUME_SORTED=true REMOVE_DUPLICATES=false
+        """
+        # picard MarkDuplicates requires position sorted BAM, so we need to sort the input BAM by name first
+
+# Step 5: Filter duplicates to final BAM
+rule filter_dups_PE_dedup5:
+    input:
+        dupmark = rules.mark_duplicates_PE_dedup4.output.dupmark
+    output:
+        final_bam = "filtered/{sample}.PE.final.bam"
+    threads: THREADS
+    resources:
+        mem_mb = MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
+
+        # samtools view -F 1548 -f 2 -b {input.dupmark} > {output.final_bam}
+        samtools view -F 1548 -f 2 -u {input.dupmark} | samtools sort -@ {threads} -m $m_per_thread -o {output.final_bam}
+        rm {input.dupmark}
+        """
+
+# Step 6: Index final BAM
+rule index_final_PE_dedup6:
+    input:
+        bam = rules.filter_dups_PE_dedup5.output.final_bam
+    output:
+        bai = "filtered/{sample}.PE.final.bam.bai"
+    threads: THREADS
+    resources:
+        mem_mb = MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        samtools index {input.bam}
+        """
+
+# Step 7: Flagstat QC on deduplicated BAM
+rule flagstat_dedup_PE_dedup7:
+    input:
+        bam = rules.filter_dups_PE_dedup5.output.final_bam
+    output:
+        flagstat = "qc/{sample}.PE.flagstat_dedup.qc"
+    threads: THREADS
+    resources:
+        mem_mb = MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
+        samtools sort -n -@ {threads} -m $m_per_thread {input.bam} -O SAM \
+          | SAMstats --sorted_sam_file - --outf {output.flagstat}
+        """
+
+# Step 8: Compute library complexity (PBC)
+rule pbc_PE_dedup8:
+    input:
+        bam = rules.filter_dups_PE_dedup5.output.final_bam
+    output:
+        pbc = "qc/{sample}.PE.pbc.qc"
+    threads: THREADS
+    resources:
+        mem_mb = MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
+        samtools sort -n -@ {threads} -m $m_per_thread {input.bam} -o filtered/{wildcards.sample}.PE.srt.tmp.bam
+        bedtools bamtobed -bedpe -i filtered/{wildcards.sample}.PE.srt.tmp.bam \
+            | awk 'BEGIN{{OFS="\\t"}}{{print $1,$2,$4,$6,$9,$10}}' \
+            | grep -v 'chrM' \
+            | sort | uniq -c \
+            | awk 'BEGIN{{mt=0;m0=0;m1=0;m2=0}} \
+                ($1==1){{m1+=1}} ($1==2){{m2+=1}} {{m0+=1;mt+=$1}} \
+                END{{printf "%d\\t%d\\t%d\\t%d\\t%f\\t%f\\t%f\\n",mt,m0,m1,m2,m0/mt,m1/m0,m1/m2}}' \
+            > {output.pbc}
+        rm filtered/{wildcards.sample}.PE.srt.tmp.bam
+        """
+
+
+
+
+
+
+
+
+
+
+############################################################
+#  2a. BAM → tagAlign (SE / PE)                        
+############################################################
+
+# rule bam_to_tag:
+#     input:
+#         bam = rules.dedup_filter.output.final_bam
+#     output:
+#         tag = "tagAlign/{sample}.SE.tagAlign.gz"
+#     threads: 1
+#     shell:
+#         """
+#         bedtools bamtobed -i {input.bam} \
+#           | awk 'BEGIN{{OFS="\\t"}}{{$4="N";$5="1000";print}}' \
+#           | gzip -nc \
+#           > {output.tag}
+#         """
+
+
+# Note: Change from Original: This rule now always filters out chrM reads
+############################################################
+#  TagAlign File Format: (separates paried reads)
+#  chr#   start    end     name    score   strand
+#  chr1    1000    1001    N       1000    +
+#  chr1    1002    1003    N       1000    -
+############################################################
+rule bam_to_tag_PE:
+    input:
+        bam = rules.filter_dups_PE_dedup5.output.final_bam
+    output:
+        bedpe = "bedpe/{sample}.bedpe.gz",
+        tag   = "tagAlign/{sample}.PE.tagAlign.gz",
+        tag_subsample = "tagAlign/{sample}.PE.subsample.tagAlign.gz"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+mkdir -p bedpe tagAlign
+# bedtools bamtobed -bedpe -mate1 -i {input.bam} | pigz -p {threads} -nc > {output.bedpe}   # This is wrong, bedtools bamtobed need name sorted bam
+
+m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
+samtools sort -n -@ {threads} -m $m_per_thread -o filtered/{wildcards.sample}.PE.namesorted.bam {input.bam}
+bedtools bamtobed -bedpe -mate1 -i filtered/{wildcards.sample}.PE.namesorted.bam | pigz -p {threads} -nc > {output.bedpe}
+rm filtered/{wildcards.sample}.PE.namesorted.bam
+
+zcat {output.bedpe} \
+| grep -v “chrM” \
+| awk 'BEGIN{{OFS="\\t"}}{{printf "%s\\t%s\\t%s\\tN\\t1000\\t%s\\n%s\\t%s\\t%s\\tN\\t1000\\t%s\\n", $1,$2,$3,$9,$4,$5,$6,$10}}' \
+| pigz -p {threads} -nc > {output.tag}
+
+zcat {output.bedpe} \
+| grep -v “chrM” \
+| awk 'BEGIN{{OFS="\\t"}}{{printf "%s\\t%s\\t%s\\tN\\t1000\\t%s\\n%s\\t%s\\t%s\\tN\\t1000\\t%s\\n", $1,$2,$3,$9,$4,$5,$6,$10}}' \
+| shuf -n {SUBSAMPLE} --random-source=<(openssl enc -aes-256-ctr -pass pass:$(zcat -f {output.bedpe} | wc -c) -nosalt </dev/zero 2>/dev/null) \
+| pigz -p {threads} -nc > {output.tag_subsample}
+        """
+
+
+############################################################
+#  2b. Cross‐correlation QC                          
+############################################################
+
+# rule xcor:
+#     input:
+#         tag = rules.bam_to_tag.output.tag
+#     output:
+#         qc   = "qc/{sample}.xcor.qc",
+#         plot = "qc/{sample}.xcor.plot.pdf"
+#     threads: THREADS
+#     shell:
+#         """
+#         Rscript run_spp.R \
+#           -c={input.tag} -p={threads} -filtchr=chrM \
+#           -savp={output.plot} -out={output.qc}
+#         sed -r 's/,[^\\t]+//g' {output.qc} > temp && mv temp {output.qc}
+#         """
+
+
+############################################################
+#  2c. Self‐pseudoreplicates (SE / PE)             
+############################################################
+
+# rule spr_SE:
+#     input:
+#         tag = rules.bam_to_tag.output.tag
+#     output:
+#         pr1 = "tagAlign/{sample}.pr1.SE.tagAlign.gz",
+#         pr2 = "tagAlign/{sample}.pr2.SE.tagAlign.gz"
+#     shell:
+#         """
+#         nlines=$(zcat {input.tag} | wc -l)
+#         nlines=$(( (nlines+1)/2 ))
+#         zcat {input.tag} | shuf … | split -d -l $nlines {wildcards.sample}.
+#         gzip -nc {wildcards.sample}.00 > {output.pr1}
+#         gzip -nc {wildcards.sample}.01 > {output.pr2}
+#         """
+
+
+rule spr_PE:
+    input:
+        tag = rules.bam_to_tag_PE.output.tag
+    output:
+        pr1 = "tagAlign/{sample}.PE.pr1.tagAlign.gz",
+        pr2 = "tagAlign/{sample}.PE.pr2.tagAlign.gz"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        mkdir -p tagAlign
+        PR_PREFIX="tagAlign/{wildcards.sample}.filt.nodup"
+        PR1_TA_FILE="tagAlign/{wildcards.sample}.PE.pr1.tagAlign.gz"
+        PR2_TA_FILE="tagAlign/{wildcards.sample}.PE.pr2.tagAlign.gz"
+        joined="tagAlign/{wildcards.sample}.temp.bedpe"
+
+        # Create pseudo-BEDPE by combining every two lines into one
+        zcat {input.tag} | sed 'N;s/\\n/\\t/' | gzip -nc > $joined
+
+        # Count total read pairs
+        nlines=$(zcat $joined | wc -l)
+        nlines=$(( (nlines + 1) / 2 ))
+
+        # Shuffle and split BEDPE into two parts
+        zcat $joined | shuf --random-source=<(openssl enc -aes-256-ctr -pass pass:$(zcat -f {input.tag} | wc -c) -nosalt </dev/zero 2>/dev/null) \
+          | split -d -l $nlines $PR_PREFIX
+        # this will create two files: {PR_PREFIX}00 and {PR_PREFIX}01
+
+        # Convert each half to tagAlign format
+        awk 'BEGIN{{OFS="\\t"}}{{printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n", $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12}}' ${PR_PREFIX}00 \
+          | gzip -nc > $PR1_TA_FILE
+        rm ${PR_PREFIX}00
+
+        awk 'BEGIN{{OFS="\\t"}}{{printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n", $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12}}' ${PR_PREFIX}01 \
+          | gzip -nc > $PR2_TA_FILE
+        rm ${PR_PREFIX}01
+        rm $joined
+        """
+
+
+############################################################
+#  2d. Pooled replicates + pseudoreps               
+############################################################
+
+# Note: This rule updates the original to dynamically pool all replicates
+# TODO: this is wrong for now, Need to update smaple sheet and use that info to pool the right samples
+rule poll_fullTA:
+    input:
+        full_TA = lambda wc: expand("tagAlign/{sample}.PE.tagAlign.gz", sample=SAMPLES[{wc.condition}])
+    output:
+        pooled = "tagAlign/{condition}.pooled.PE.tagAlign.gz"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        # Pool all replicates into a single tagAlign
+        zcat {input.full_TA} | gzip -nc > {output.pooled}
+        """
+
+
+
+rule poll_PRs:
+    input:
+        pr1    = lambda wc: expand("tagAlign/{sample}.PE.pr1.tagAlign.gz", sample=SAMPLES[{wc.condition}]),
+        pr2    = lambda wc: expand("tagAlign/{sample}.PE.pr2.tagAlign.gz", sample=SAMPLES[{wc.condition}])
+    output:
+        ppr1   = "tagAlign/{condition}.pooled.PE.pr1.tagAlign.gz",
+        ppr2   = "tagAlign/{condition}.pooled.PE.pr2.tagAlign.gz"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        # Pool first pseudo-replicates
+        zcat {input.pr1} | gzip -nc > {output.ppr1}
+        
+        # Pool second pseudo-replicates
+        zcat {input.pr2} | gzip -nc > {output.ppr2}
+        """
+
+
+############################################################
+#  2e. Tn5 shifting                                
+############################################################
+
+rule tn5_shift:
+    input:
+        tag = "tagAlign/{sample}.{suffix}.tagAlign.gz"
+    output:
+        shifted = "tagAlign/{sample}.{suffix}.tn5.tagAlign.gz"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        zcat {input.tag} \
+          | awk -F '\\t' 'BEGIN{{OFS=FS}}{{if($6=="+"){{$2+=4}} else if($6=="-"){{$3-=5}} print}}' \
+          | gzip -nc > {output.shifted}
+        """
+
+
+############################################################
+#  2f. JSD (plotFingerprint)                           
+############################################################
+
+# rule jsd:
+#     input:
+#         bam1 = rules.dedup_filter.output.final_bam,
+#         bam2 = lambda wc: rules.dedup_filter.output.final_bam.replace(wc.sample, "rep2")
+#     output:
+#         plot = "qc/{sample}.jsd.png",
+#         log  = "qc/{sample}.jsd.log"
+#     threads: THREADS
+#     shell:
+#         """
+#         bedtools intersect -v -abam {input.bam1} -b {BLACKLIST} > tmp1.bam
+#         bedtools intersect -v -abam {input.bam2} -b {BLACKLIST} > tmp2.bam
+#         plotFingerprint -b tmp1.bam tmp2.bam \
+#           --outQualityMetrics {output.log} \
+#           --plotFile {output.plot} \
+#           --minMappingQuality 30 --numberOfProcessors {threads}
+#         """
+
+
+############################################################
+#  2g. GC bias                                         
+############################################################
+
+# rule gc_bias:
+#     input:
+#         bam = rules.dedup_filter.output.final_bam
+#     output:
+#         plot = "qc/{sample}.gc_plot.png",
+#         log  = "qc/{sample}.gc.txt"
+#     threads: THREADS
+#     shell:
+#         """
+#         java -Xmx6G -jar {config[picard]}/CollectGcBiasMetrics.jar \
+#           R={REF_FA} I={input.bam} O={output.log} CHART=tmp.gc.pdf
+#         python plot_gc.py {output.log} {wildcards.sample}
+#         """
+
+
+############################################################
+#  2h. Fragment‐length stats (PE only)                 
+############################################################
+
+# rule fraglen_stat:
+#     input:
+#         bam = rules.dedup_filter.output.final_bam
+#     output:
+#         qc   = "qc/{sample}.nucleosomal.qc",
+#         plot = "qc/{sample}.fraglen_dist.png"
+#     threads: THREADS
+#     shell:
+#         """
+#         java -Xmx6G -jar {config[picard]}/CollectInsertSizeMetrics.jar \
+#           INPUT={input.bam} OUTPUT=tmp.inserts.txt H=tmp.inserts.pdf \
+#           VERBOSITY=ERROR QUIET=TRUE W=1000 STOP_AFTER=5000000
+#         python fraglen_qc.py tmp.inserts.txt {wildcards.sample}
+#         """
+
+
+############################################################
+#  3a. Peak calling (MACS2)                          
+############################################################
+
+rule macs2_callpeak:
+    input:
+        tag = "tagAlign/{sample}.PE.tn5.tagAlign.gz"
+    output:
+        raw_narrow = "macs2_temp/{sample}_peaks.narrowPeak",
+        treat_bdg = "macs2_temp/{sample}_treat_pileup.bdg",
+        control_bdg = "macs2_temp/{sample}_control_lambda.bdg",
+        summits = "macs2_temp/{sample}_summits.bed",
+        xls = "macs2_temp/{sample}_peaks.xls"
+    params:
+        genome_size = GENOME_SIZE,
+        pval_thresh = MACS2_PVAL_THRESHOLD,
+        smooth_win = SMOOTH_WIN
+    threads: THREADS
+    resources:
+        mem_mb = MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        shiftsize=$((-1 * {params.smooth_win} / 2))
+        macs2 callpeak -t {input.tag} -f BED -n "macs2_temp/{wildcards.sample}" \
+            -g {params.genome_size} -p {params.pval_thresh} \
+            --shift $shiftsize --extsize {params.smooth_win} \
+            --nomodel -B --SPMR --keep-dup all --call-summits
+        """
+
+rule macs2_cap_peaks:
+    input:
+        raw = "macs2_temp/{sample}_peaks.narrowPeak"
+    output:
+        narrow = "peaks/{sample}.narrowPeak.gz"
+    params:
+        npeaks = 300000
+    threads: 1
+    shell:
+        """
+        (sort -k8gr {input.raw} | head -n {params.npeaks} \
+            | awk 'BEGIN{{OFS="\\t"}}{{$4="Peak_"NR;print}}' \
+            | gzip -nc > {output.narrow}) || true
+        """
+
+rule macs2_make_fc_bw:
+    input:
+        treat = "macs2_temp/{sample}_treat_pileup.bdg",
+        control = "macs2_temp/{sample}_control_lambda.bdg"
+    output:
+        fc_bw = "tracks/{sample}.fc.signal.bw"
+    threads: THREADS
+    resources:
+        mem_mb = MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        macs2 bdgcmp -t {input.treat} -c {input.control} \
+            --o-prefix "macs2_temp/{wildcards.sample}" -m FE
+        slopBed -i macs2_temp/{wildcards.sample}_FE.bdg -g {CHRSIZES} -b 0 \
+            | bedClip stdin {CHRSIZES} macs2_temp/{wildcards.sample}.fc.signal.bedgraph
+        sort -k1,1 -k2,2n macs2_temp/{wildcards.sample}.fc.signal.bedgraph \
+            | bedtools merge -i - -d -1 -c 4 -o mean \
+            > macs2_temp/{wildcards.sample}.fc.signal.srt.bedgraph
+        bedGraphToBigWig macs2_temp/{wildcards.sample}.fc.signal.srt.bedgraph \
+            {CHRSIZES} {output.fc_bw}
+        # rm -f macs2_temp/{wildcards.sample}.fc.signal.bedgraph \
+        #        macs2_temp/{wildcards.sample}.fc.signal.srt.bedgraph \
+        #        macs2_temp/{wildcards.sample}_FE.bdg
+        """
+
+rule macs2_make_pval_bw:
+    input:
+        tag = "tagAlign/{sample}.PE.tn5.tagAlign.gz",
+        treat = "macs2_temp/{sample}_treat_pileup.bdg",
+        control = "macs2_temp/{sample}_control_lambda.bdg"
+    output:
+        pval_bw = "tracks/{sample}.pval.signal.bw"
+    threads: THREADS
+    resources:
+        mem_mb = MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        sval=$(wc -l <(zcat -f {input.tag}) | awk '{{printf "%f", $1/1000000}}')
+        macs2 bdgcmp -t {input.treat} -c {input.control} \
+            --o-prefix "macs2_temp/{wildcards.sample}" -m ppois -S $sval
+        slopBed -i macs2_temp/{wildcards.sample}_ppois.bdg -g {CHRSIZES} -b 0 \
+            | bedClip stdin {CHRSIZES} macs2_temp/{wildcards.sample}.pval.signal.bedgraph
+        sort -k1,1 -k2,2n macs2_temp/{wildcards.sample}.pval.signal.bedgraph \
+            | bedtools merge -i - -d -1 -c 4 -o mean \
+            > macs2_temp/{wildcards.sample}.pval.signal.srt.bedgraph
+        bedGraphToBigWig macs2_temp/{wildcards.sample}.pval.signal.srt.bedgraph \
+            {CHRSIZES} {output.pval_bw}
+        # rm -f macs2_temp/{wildcards.sample}.pval.signal.bedgraph \
+        #        macs2_temp/{wildcards.sample}.pval.signal.srt.bedgraph \
+        #        macs2_temp/{wildcards.sample}_ppois.bdg \
+        #        {input.treat} {input.control}
+        """
+
+
+############################################################
+#  3b. Blacklist filtering                           
+############################################################
+
+# rule filter_peaks:
+#     input:
+#         narrow = rules.macs2_narrow.output.narrow
+#     output:
+#         filt = "peaks/{sample}.filt.narrowPeak.gz"
+#     shell:
+#         """
+#         bedtools intersect -v -a {input.narrow} -b {BLACKLIST} \
+#           | awk 'BEGIN{{OFS="\\t"}}{{$5=min($5,1000);print}}' \
+#           | grep -P 'chr[0-9XY]+' \
+#           | gzip -nc > {output.filt}
+#         """
+
+
+############################################################
+#  3c. BED → bigBed conversion                        
+############################################################
+
+# rule make_bigbed:
+#     input:
+#         filt = rules.filter_peaks.output.filt
+#     output:
+#         bb = "peaks/{sample}.narrowPeak.bb"
+#     shell:
+#         """
+#         zcat {input.filt} | sort -k1,1 -k2,2n > tmp.bed
+#         bedToBigBed tmp.bed {CHRSIZES} {output.bb}
+#         """
+
+
+############################################################
+#  3d. Naïve overlap threshold                        
+############################################################
+
+# rule naive_overlap:
+#     input:
+#         pooled = "peaks/pooled.narrowPeak.gz",
+#         rep1   = rules.filter_peaks.output.filt,
+#         rep2   = rules.filter_peaks.output.filt.replace("{sample}","rep2")
+#     output:
+#         overlap = "peaks/pooledInReps.narrowPeak.gz"
+#     shell:
+#         """
+#         intersectBed -wo -a {input.pooled} -b {input.rep1} | \
+#           awk '…fraction ≥ 0.5…' | cut -f1-10 \
+#           | intersectBed -wo -a - -b {input.rep2} \
+#           | awk '…fraction ≥ 0.5…' | cut -f1-10 \
+#           | sort | uniq \
+#           | bedtools intersect -v -b {BLACKLIST} \
+#           | gzip -nc > {output.overlap}
+#         """
+
+
+############################################################
+#  Differential Accessibility Analysis
+############################################################
+
+# 1. Build consensus peaks across all samples
+rule consensus_peaks:
+    input:
+        # All narrowPeak.gz for all samples in both groups
+        peaks = expand("peaks/{sample}.narrowPeak.gz", sample=SAMPLES_flat)
+    output:
+        consensus = "diff/consensus_peaks.bed"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        mkdir -p diff
+        pigz -p $(( {threads} / 3 )) -dc peaks/*.narrowPeak.gz | cut -f1-3 | sort --parallel=$(( {threads} / 3 )) -k1,1 -k2,2n | bedtools merge -i - > {output.consensus}
+        """
+
+# 2. Generate count matrix for consensus peaks
+rule count_matrix:
+    input:
+        consensus = rules.consensus_peaks.output.consensus,
+        bams = expand("filtered/{sample}.PE.final.bam", sample=SAMPLES_flat)
+    output:
+        "diff/counts.tsv"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        # Convert BED to SAF format for featureCounts
+        awk 'BEGIN{{OFS="\\t"; print "GeneID","Chr","Start","End","Strand"}} {{print "peak"NR,$1,$2+1,$3,"."}}' {input.consensus} > diff/consensus_peaks.saf
+        featureCounts -p -a diff/consensus_peaks.saf -o {output} -F SAF -T {threads} {input.bams}
+        """
+
+# 3. Perform differential accessibility analysis
+rule diff_accessibility:
+    input:
+        counts = rules.count_matrix.output,
+        metadata = "diff/metadata.csv",
+        script = "scripts/differential_accessibility.r"
+    output:
+        "diff/deseq2_results.csv"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        mkdir -p diff
+        Rscript scripts/differential_accessibility.r {input.counts} {input.metadata} {output} > diff/deseq2.log 2>&1
+        """
+
+
+############################################################
+#  4. IDR (true & pseudo)                              
+############################################################
+
+# rule idr:
+#     input:
+#         peak1 = rules.macs2_narrow.output.narrow.replace("{sample}","rep1"),
+#         peak2 = rules.macs2_narrow.output.narrow.replace("{sample}","rep2"),
+#         pooled= "peaks/pooled.narrowPeak.gz"
+#     output:
+#         cons = "idr/pooled.conservative.narrowPeak.gz",
+#         opt  = "idr/pooled.optimal.narrowPeak.gz"
+#     threads: THREADS
+#     shell:
+#         """
+#         idr --samples {input.peak1} {input.peak2} \
+#           --pooled {input.pooled} --output-file tmp.idr.txt \
+#           --rank signal.value --idr-threshold {IDR_THRESH}
+
+#         # select conservative (longest list) and optimal sets:
+#         sort -k7gr tmp.idr.txt | head -n {…} \
+#           | gzip -nc > {output.cons}
+#         # similarly for optimal…
+#         """
+
+
+############################################################
+#  4g. FRiP                                             
+############################################################
+
+# rule frip:
+#     input:
+#         tag = rules.tn5_shift.output.shifted,
+#         idr = rules.idr.output.cons
+#     output:
+#         frip = "qc/{sample}.frip.txt"
+#     shell:
+#         """
+#         val1=$(bedtools intersect -a <(zcat -f {input.tag}) \
+#                -b <(zcat -f {input.idr}) -wa -u | wc -l)
+#         val2=$(zcat {input.tag} | wc -l)
+#         echo $(awk 'BEGIN{{print {val1}/{val2}}}') > {output.frip}
+#         """
+
+
+############################################################
+#  5. Coverage bigWig                              
+############################################################
+
+# rule count_signal:
+#     input:
+#         tag = rules.tn5_shift.output.shifted
+#     output:
+#         pos = "tracks/{sample}.positive.bigwig",
+#         neg = "tracks/{sample}.negative.bigwig"
+#     shell:
+#         """
+#         zcat {input.tag} | sort -k1,1 -k2,2n \
+#           | bedtools genomecov -5 -bg -strand + -g {CHRSIZES} -i - \
+#           > tmp.pos.bg
+#         bedGraphToBigWig tmp.pos.bg {CHRSIZES} {output.pos}
+
+#         zcat {input.tag} | sort -k1,1 -k2,2n \
+#           | bedtools genomecov -5 -bg -strand - -g {CHRSIZES} -i - \
+#           > tmp.neg.bg
+#         bedGraphToBigWig tmp.neg.bg {CHRSIZES} {output.neg}
+#         """
+
+
+############################################################
+#  7. TSS enrichment (annotation)                   
+############################################################
+
+# rule tss_enrich:
+#     input:
+#         bam = rules.dedup_filter.output.final_bam,
+#         tss = TSS_BED
+#     output:
+#         plot = "tss/{sample}.tss_enrich.png",
+#         log  = "tss/{sample}.tss_enrich.qc"
+#     shell:
+#         """
+#         python make_tss_plot.py {input.bam} {input.tss} \
+#           {wildcards.sample} {CHRSIZES} {config[read_len]}
+#         """
+
+
+############################################################
+#  7. Fraction in annotated regions                 
+############################################################
+
+# rule annot_enrich:
+#     input:
+#         tag = rules.tn5_shift.output.shifted
+#     output:
+#         annot = "qc/{sample}.annotation.txt"
+#     shell:
+#         """
+#         for bed in {DNASE_BED} {PROM_BED} {ENH_BED} {BLACKLIST}; do
+#           printf "$(basename $bed)\\t"
+#           bedtools sort -i $bed | bedtools merge -i - \
+#             | bedtools intersect -u -a <(zcat {input.tag}) -b - \
+#             | wc -l
+#         done > {output.annot}
+#         """
+
+
+############################################################
+#  USAGE on Slurm HPC
+#
+# snakemake --jobs 100 \
+#           --cluster "sbatch -c {threads} --mem={resources.mem_mb} \
+#                    --time={resources.time or '02:00:00'}" \
+#           --latency-wait 60
+############################################################

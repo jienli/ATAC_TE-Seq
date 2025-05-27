@@ -1,0 +1,42 @@
+# default Conda environment for atac/chip
+
+python >=3
+bwa ==0.7.17
+bowtie2 ==2.3.4.3
+tbb ==2020.2 # use old version to fix libtbb.so.2 error for bowtie2
+samtools ==1.9
+htslib ==1.9
+bedtools ==2.29.0
+sambamba ==0.6.6
+
+pysam ==0.15.3
+pybedtools ==0.8.0
+pybigwig ==0.3.13
+
+deeptools ==3.3.1
+cutadapt ==2.5
+preseq ==2.0.3
+pyfaidx ==0.5.5.2
+bedops ==2.4.39
+
+ptools_bin
+
+jsondiff ==1.1.1
+ghostscript
+tabix
+matplotlib
+numpy
+scikit-learn
+scipy
+pandas
+jinja2
+gsl
+
+samstats ==0.2.1
+idr ==2.0.4.2
+
+java-jdk
+
+picard ==2.20.7
+trimmomatic ==0.39
+

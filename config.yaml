@@ -1,0 +1,88 @@
+# samples:
+#   rep1:
+#     fastq: "fastq/rep1.SE.fastq.gz"
+#     paired: false
+#   rep2:
+#     fastq1: "fastq/rep2.R1.fastq.gz"
+#     fastq2: "fastq/rep2.R2.fastq.gz"
+#     paired: true
+
+# samples:
+#   PDL25:
+#     - "SRR14646390"
+#     - "SRR14646391"
+#     - "SRR14646392"
+#   PDL50:
+#     - "SRR14646405"
+#     - "SRR14646406"
+
+samples:
+  H1:
+    - "SRR13601447"
+
+# # PDL25
+# /users/jli141/data/Hayflick/ATAC_Seq/fastq/SRR14646390_1.fastq.gz
+# /users/jli141/data/Hayflick/ATAC_Seq/fastq/SRR14646390_2.fastq.gz
+# /users/jli141/data/Hayflick/ATAC_Seq/fastq/SRR14646391_1.fastq.gz
+# /users/jli141/data/Hayflick/ATAC_Seq/fastq/SRR14646391_2.fastq.gz
+# /users/jli141/data/Hayflick/ATAC_Seq/fastq/SRR14646392_1.fastq.gz
+# /users/jli141/data/Hayflick/ATAC_Seq/fastq/SRR14646392_2.fastq.gz
+
+# # PDL50
+# /users/jli141/data/Hayflick/ATAC_Seq/fastq/SRR14646405_1.fastq.gz
+# /users/jli141/data/Hayflick/ATAC_Seq/fastq/SRR14646405_2.fastq.gz
+# /users/jli141/data/Hayflick/ATAC_Seq/fastq/SRR14646406_1.fastq.gz
+# /users/jli141/data/Hayflick/ATAC_Seq/fastq/SRR14646406_2.fastq.gz
+
+# expand("path/to/fastq/{sample}.fastq.gz", sample=samples_by_condition[{wildcards.condition}])
+# output = file/.../{condition}
+
+# samples Original format (no good)
+  #   rep1:
+  #     fastq: "../ATAC_Seq/fastq/SRR14646390_1.fastq.gz"
+  #     paired: false
+  #   rep2:
+  #     fastq1: "../ATAC_Seq/fastq/SRR14646390_2.fastq.gz"
+  #     fastq2: "../ATAC_Seq/fastq/SRR14646390_3.fastq.gz"
+  #     paired: true
+  #   fastq: "../ATAC_Seq/fastq/SRR14646390_1.fastq.gz"
+  #   paired: false
+  # rep2:
+  #   fastq1: "../ATAC_Seq/fastq/SRR14646391_1.fastq.gz"
+  #   fastq2: "../ATAC_Seq/fastq/SRR14646391_2.fastq.gz"
+  #   paired: true
+
+
+
+# bwt2_index: "/users/jli141/data/Hayflick/TE-Seq/aref/default/A.REF.fa"
+
+# update to correct path for bowtie2 index files
+bwt2_index: "/users/jli141/data/Hayflick/testing_snakemake/ref/genome_index/bowtie2/A.REF"
+
+# bwt2_mito_index: "ref/mito_index/bowtie2/mito"
+
+# update to correct value and path for chromosome sizes
+genome_size: "2.7e9"
+chrom_sizes: "ref/hs1.chrom.sizes"
+
+# blacklist: "ref/blacklist.bed"
+# reference_fasta: "ref/genome.fa"
+# tss_bed: "ref/annotations/tss.bed"
+# dnase_bed: "ref/annotations/dnase.bed"
+# enhancer_bed: "ref/annotations/enhancer.bed"
+# promoter_bed: "ref/annotations/promoter.bed"
+subsample_reads: 25000000
+threads: 16
+mem_mb: 120000
+# idr_threshold: 0.05
+smooth_window: 150
+
+picard: "scripts/picard.jar"
+read_len: 150
+script_dir: "scripts_encodeATAC"
+my_script_dir: "scripts"
+adaptor_err_rate: 0.2
+multimapping: 100
+sample_fastq_dir: "../ATAC_Data_H1/fastq"
+
+macs2_pval_threshold: 0.01

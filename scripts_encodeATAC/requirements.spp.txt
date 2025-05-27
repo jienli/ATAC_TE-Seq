@@ -1,0 +1,17 @@
+# Conda environment for tasks (spp, xcor) in atac/chip 
+# some packages (phantompeakquals, r-spp) will be installed separately
+# couldn't resolve all conda conflicts
+
+python >=3
+bedtools ==2.29.0
+bedops ==2.4.39
+
+r-base ==3.6.1
+
+tabix
+
+matplotlib
+pandas
+numpy
+ghostscript
+
