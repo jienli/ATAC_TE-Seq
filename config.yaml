@@ -86,3 +86,4 @@ multimapping: 100
 sample_fastq_dir: "../ATAC_Data_H1/fastq"
 
 macs2_pval_threshold: 0.01
+te_annotation: "/users/jli141/data/Hayflick/testing_snakemake/ref/annotations/RTE_hs1_annotation_subset.csv"
