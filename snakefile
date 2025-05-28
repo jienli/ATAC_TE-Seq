@@ -1102,6 +1102,59 @@ rule diff_accessibility:
         """
 
 
+
+
+############################################################
+#  Downstream TE/TE family analysis
+############################################################
+
+# Ensure directory function is available
+from snakemake.io import directory
+
+rule merge_te_annotation:
+    input:
+        deseq2="diff/deseq2_results.csv",
+        counts="diff/counts.tsv",
+        annot=config["te_annotation"],
+        script = "scripts/merge_deseq2_te_annotation.py"
+    output:
+        merged="analysis/merged_results.csv",
+        merged_multi="analysis/merged_results_multi.csv"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        mkdir -p analysis
+        python3 {input.script} \
+          --deseq2 {input.deseq2} \
+          --counts {input.counts} \
+          --annot {input.annot} \
+          --out {output.merged}
+        """
+
+rule analyze_peak_enrichment:
+    input:
+        merged=rules.merge_te_annotation.output.merged,
+    output:
+        analysis_dir=directory("analysis/plots")
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        mkdir -p {output.analysis_dir}
+        python3 {config[my_script_dir]}/analyze_peak_enrichment.py \
+          --input {input.merged} \
+          --outdir {output.analysis_dir}
+        """
+
+
+
 ############################################################
 #  4. IDR (true & pseudo)                              
 ############################################################
