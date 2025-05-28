@@ -1,0 +1,24 @@
+name: ATAC_Core
+channels:
+  - defaults
+  - conda-forge
+  - bioconda
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+dependencies:
+  - bowtie2
+  - coreutils
+  - grep
+  - pigz
+  - pip
+  - python=3.9
+  - samtools
+  - bioconda::samstats
+  - bedtools
+  - ucsc-bedclip
+  - ucsc-bedgraphtobigwig
+  - ucsc-bigwigtobedgraph
+  - r-base
+  - bioconductor-deseq2
+  - subread
+prefix: /users/jli141/miniconda3/envs/ATAC_Core
