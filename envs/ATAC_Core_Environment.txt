@@ -1,0 +1,13 @@
+argcomplete @ file:///tmp/build/80754af9/argcomplete_1618920853202/work
+Cython==0.29.37
+dill @ file:///croot/dill_1715094664823/work
+importlib-metadata @ file:///tmp/build/80754af9/importlib-metadata_1648544546694/work
+MACS2==2.2.9.1
+multiprocess @ file:///croot/multiprocess_1692294385131/work
+numpy==2.0.2
+PyYAML @ file:///croot/pyyaml_1728657952215/work
+SAMstats==0.2.2
+toml @ file:///tmp/build/80754af9/toml_1616166611790/work
+xmltodict @ file:///croot/xmltodict_1738224717483/work
+yq @ file:///tmp/build/80754af9/yq_1614712515795/work
+zipp @ file:///croot/zipp_1732630741423/work

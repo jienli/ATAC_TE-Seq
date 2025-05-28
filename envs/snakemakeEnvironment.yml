@@ -1,0 +1,13 @@
+name: snakemake
+channels:
+  - defaults
+  - conda-forge
+  - bioconda
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+dependencies:
+  - snakemake
+  - snakemake-executor-plugin-slurm
+  - python=3.11
+  - cutadapt
+prefix: /users/jli141/miniconda3/envs/snakemake
