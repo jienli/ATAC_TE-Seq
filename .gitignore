@@ -5,3 +5,14 @@ dag.svg
 *.fastq.gz
 *.bw
 *.narrowPeak
+.snakemake/
+adapters/
+aligned/
+analysis/
+batch_logs/
+bedpe/
+filtered/
+macs2_temp/
+peaks/
+qc/
+tagAlign/

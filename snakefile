@@ -118,7 +118,9 @@ rule all:
         expand("peaks/{sample}.narrowPeak.gz", sample=SAMPLES_flat_),
         expand("filtered/{sample}.PE.final.bam.bai", sample=SAMPLES_flat_),
         expand("tracks/{sample}.fc.signal.bw", sample=SAMPLES_flat_),
-        expand("tracks/{sample}.pval.signal.bw", sample=SAMPLES_flat_)
+        expand("tracks/{sample}.pval.signal.bw", sample=SAMPLES_flat_),
+        "analysis/counts.tsv",
+        "analysis/merged_results_count.csv"
 
 ############################################################
 #  0a. Adapter detection                              
@@ -1051,7 +1053,7 @@ rule consensus_peaks:
         # All narrowPeak.gz for all samples in both groups
         peaks = expand("peaks/{sample}.narrowPeak.gz", sample=SAMPLES_flat)
     output:
-        consensus = "diff/consensus_peaks.bed"
+        consensus = "analysis/consensus_peaks.bed"
     threads: THREADS
     resources:
         mem_mb=MEM_MB
@@ -1069,7 +1071,7 @@ rule count_matrix:
         consensus = rules.consensus_peaks.output.consensus,
         bams = expand("filtered/{sample}.PE.final.bam", sample=SAMPLES_flat)
     output:
-        "diff/counts.tsv"
+        "analysis/counts.tsv"
     threads: THREADS
     resources:
         mem_mb=MEM_MB
@@ -1078,18 +1080,18 @@ rule count_matrix:
     shell:
         """
         # Convert BED to SAF format for featureCounts
-        awk 'BEGIN{{OFS="\\t"; print "GeneID","Chr","Start","End","Strand"}} {{print "peak"NR,$1,$2+1,$3,"."}}' {input.consensus} > diff/consensus_peaks.saf
-        featureCounts -p -a diff/consensus_peaks.saf -o {output} -F SAF -T {threads} {input.bams}
+        awk 'BEGIN{{OFS="\\t"; print "GeneID","Chr","Start","End","Strand"}} {{print "peak"NR,$1,$2+1,$3,"."}}' {input.consensus} > analysis/consensus_peaks.saf
+        featureCounts -p -a analysis/consensus_peaks.saf -o {output} -F SAF -T {threads} {input.bams}
         """
 
 # 3. Perform differential accessibility analysis
 rule diff_accessibility:
     input:
         counts = rules.count_matrix.output,
-        metadata = "diff/metadata.csv",
+        metadata = "analysis/metadata.csv",
         script = "scripts/differential_accessibility.r"
     output:
-        "diff/deseq2_results.csv"
+        "analysis/deseq2/deseq2_results.csv"
     threads: THREADS
     resources:
         mem_mb=MEM_MB
@@ -1097,15 +1099,15 @@ rule diff_accessibility:
         "ATAC_Core"
     shell:
         """
-        mkdir -p diff
-        Rscript scripts/differential_accessibility.r {input.counts} {input.metadata} {output} > diff/deseq2.log 2>&1
+        mkdir -p analysis/deseq2
+        Rscript scripts/differential_accessibility.r {input.counts} {input.metadata} {output} > analysis/deseq2/deseq2.log 2>&1
         """
 
 
 
 
 ############################################################
-#  Downstream TE/TE family analysis
+#  Downstream TE/TE family analysis | per sample
 ############################################################
 
 # Ensure directory function is available
@@ -1113,13 +1115,45 @@ from snakemake.io import directory
 
 rule merge_te_annotation:
     input:
-        deseq2="diff/deseq2_results.csv",
-        counts="diff/counts.tsv",
+        counts=rules.count_matrix.output,
+        annot=config["te_annotation"],
+        script = "scripts/merge_count_te_annotation.py"
+    output:
+        merged="analysis/merged_results_count.csv",
+        merged_multi="analysis/merged_results_count_multi.csv"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        mkdir -p analysis
+        python3 {input.script} \
+          --counts {input.counts} \
+          --annot {input.annot} \
+          --out {output.merged}
+        """
+
+
+
+
+############################################################
+#  Downstream TE/TE family analysis for deseq2  | grouped
+############################################################
+
+# Ensure directory function is available
+from snakemake.io import directory
+
+rule merge_te_annotation_deseq2:
+    input:
+        deseq2= rules.diff_accessibility.output,
+        counts= rules.count_matrix.output,
         annot=config["te_annotation"],
         script = "scripts/merge_deseq2_te_annotation.py"
     output:
-        merged="analysis/merged_results.csv",
-        merged_multi="analysis/merged_results_multi.csv"
+        merged="analysis/merged_results_deseq2.csv",
+        merged_multi="analysis/merged_results_deseq2_multi.csv"
     threads: THREADS
     resources:
         mem_mb=MEM_MB
@@ -1135,9 +1169,9 @@ rule merge_te_annotation:
           --out {output.merged}
         """
 
-rule analyze_peak_enrichment:
+rule analyze_peak_enrichment_deseq2:
     input:
-        merged=rules.merge_te_annotation.output.merged,
+        merged=rules.merge_te_annotation_deseq2.output.merged,
     output:
         analysis_dir=directory("analysis/plots")
     threads: THREADS
