@@ -19,6 +19,7 @@
 samples:
   H1:
     - "SRR13601447"
+    - "SRR13601448"
 
 # # PDL25
 # /users/jli141/data/Hayflick/ATAC_Seq/fastq/SRR14646390_1.fastq.gz
@@ -61,6 +62,8 @@ bwt2_index: "/users/jli141/data/Hayflick/testing_snakemake/ref/genome_index/bowt
 
 # bwt2_mito_index: "ref/mito_index/bowtie2/mito"
 
+
+reference_genome: "/users/jli141/data/Hayflick/testing_snakemake/ref/genome_index/A.REF.fa"
 # update to correct value and path for chromosome sizes
 genome_size: "2.7e9"
 chrom_sizes: "ref/hs1.chrom.sizes"

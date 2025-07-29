@@ -1,6 +1,6 @@
 ref/genome_index
 cwd_debug.txt
-dag.svg
+dag*.svg
 *.bam
 *.fastq.gz
 *.bw

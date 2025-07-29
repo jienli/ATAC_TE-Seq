@@ -174,7 +174,8 @@ rule trim_adapters_PE:
     input:
         fastq1 = lambda wc: os.path.join(SAMPLES_FASTQ_DIR, f"{wc.sample}_1.fastq.gz"),
         fastq2 = lambda wc: os.path.join(SAMPLES_FASTQ_DIR, f"{wc.sample}_2.fastq.gz"),
-        adapter = rules.detect_adapter.output
+        # adapter = rules.detect_adapter.output
+        adapter = lambda wc: f"adapters/{wc.sample}.adapter.txt"
     params:
         adaptor_err_rate = ADAPTOR_ERR_RATE
     output:
@@ -198,39 +199,39 @@ rule trim_adapters_PE:
 #  1a. Alignment (SE / PE)                        
 ############################################################
 
-rule bowtie2_align_SE:
-    input:
-        fastq = "trimmed/{sample}.trim.fastq.gz"
-    output:
-        bam = "aligned/{sample}.SE.bam",
-        flagstat = "qc/{sample}.SE.flagstat.qc",
-        non_mito = "aligned/{sample}.SE.non_mito.bam"
-    params:
-        multimapping = MULTIMAPPING,
-        bwt2_index = BWT2_IDX
-    threads: THREADS
-    resources:
-        mem_mb=MEM_MB
-    conda:
-        "ATAC_Core"
-    shell:
-        """
-        mkdir -p aligned qc
-        bowtie2 -k {params.multimapping} --mm -x {params.bwt2_index} --threads {threads} -U <(zcat -f {input.fastq}) 2> aligned/{wildcards.sample}.align.log \
-          | samtools view -Su - \
-          | samtools sort -@ {threads} -o {output.bam}
+# rule bowtie2_align_SE:
+#     input:
+#         fastq = "trimmed/{sample}.trim.fastq.gz"
+#     output:
+#         bam = "aligned/{sample}.SE.bam",
+#         flagstat = "qc/{sample}.SE.flagstat.qc",
+#         non_mito = "aligned/{sample}.SE.non_mito.bam"
+#     params:
+#         multimapping = MULTIMAPPING,
+#         bwt2_index = BWT2_IDX
+#     threads: THREADS
+#     resources:
+#         mem_mb=MEM_MB
+#     conda:
+#         "ATAC_Core"
+#     shell:
+#         """
+#         mkdir -p aligned qc
+#         bowtie2 -k {params.multimapping} --mm -x {params.bwt2_index} --threads {threads} -U <(zcat -f {input.fastq}) 2> aligned/{wildcards.sample}.align.log \
+#           | samtools view -Su - \
+#           | samtools sort -@ {threads} -o {output.bam}
 
-        # flagstat QC
-        samtools sort -n -@ {threads} {output.bam} -O SAM \
-          | SAMstats --sorted_sam_file - --outf {output.flagstat}
+#         # flagstat QC
+#         samtools sort -n -@ {threads} {output.bam} -O SAM \
+#           | SAMstats --sorted_sam_file - --outf {output.flagstat}
 
-        # extract non‐mito
-        samtools idxstats {output.bam} \
-          | cut -f 1 \
-          | grep -v -P "^chrM$" \
-          | xargs samtools view {output.bam} -@ {threads} -b \
-          > {output.non_mito}
-        """
+#         # extract non‐mito
+#         samtools idxstats {output.bam} \
+#           | cut -f 1 \
+#           | grep -v -P "^chrM$" \
+#           | xargs samtools view {output.bam} -@ {threads} -b \
+#           > {output.non_mito}
+#         """
 
 
 
@@ -648,24 +649,24 @@ rule bam_to_tag_PE:
         "ATAC_Core"
     shell:
         """
-mkdir -p bedpe tagAlign
-# bedtools bamtobed -bedpe -mate1 -i {input.bam} | pigz -p {threads} -nc > {output.bedpe}   # This is wrong, bedtools bamtobed need name sorted bam
+        mkdir -p bedpe tagAlign
+        # bedtools bamtobed -bedpe -mate1 -i {input.bam} | pigz -p {threads} -nc > {output.bedpe}   # This is wrong, bedtools bamtobed need name sorted bam
 
-m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
-samtools sort -n -@ {threads} -m $m_per_thread -o filtered/{wildcards.sample}.PE.namesorted.bam {input.bam}
-bedtools bamtobed -bedpe -mate1 -i filtered/{wildcards.sample}.PE.namesorted.bam | pigz -p {threads} -nc > {output.bedpe}
-rm filtered/{wildcards.sample}.PE.namesorted.bam
+        m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
+        samtools sort -n -@ {threads} -m $m_per_thread -o filtered/{wildcards.sample}.PE.namesorted.bam {input.bam}
+        bedtools bamtobed -bedpe -mate1 -i filtered/{wildcards.sample}.PE.namesorted.bam | pigz -p {threads} -nc > {output.bedpe}
+        rm filtered/{wildcards.sample}.PE.namesorted.bam
 
-zcat {output.bedpe} \
-| grep -v “chrM” \
-| awk 'BEGIN{{OFS="\\t"}}{{printf "%s\\t%s\\t%s\\tN\\t1000\\t%s\\n%s\\t%s\\t%s\\tN\\t1000\\t%s\\n", $1,$2,$3,$9,$4,$5,$6,$10}}' \
-| pigz -p {threads} -nc > {output.tag}
+        zcat {output.bedpe} \
+        | grep -v “chrM” \
+        | awk 'BEGIN{{OFS="\\t"}}{{printf "%s\\t%s\\t%s\\tN\\t1000\\t%s\\n%s\\t%s\\t%s\\tN\\t1000\\t%s\\n", $1,$2,$3,$9,$4,$5,$6,$10}}' \
+        | pigz -p {threads} -nc > {output.tag}
 
-zcat {output.bedpe} \
-| grep -v “chrM” \
-| awk 'BEGIN{{OFS="\\t"}}{{printf "%s\\t%s\\t%s\\tN\\t1000\\t%s\\n%s\\t%s\\t%s\\tN\\t1000\\t%s\\n", $1,$2,$3,$9,$4,$5,$6,$10}}' \
-| shuf -n {SUBSAMPLE} --random-source=<(openssl enc -aes-256-ctr -pass pass:$(zcat -f {output.bedpe} | wc -c) -nosalt </dev/zero 2>/dev/null) \
-| pigz -p {threads} -nc > {output.tag_subsample}
+        zcat {output.bedpe} \
+        | grep -v “chrM” \
+        | awk 'BEGIN{{OFS="\\t"}}{{printf "%s\\t%s\\t%s\\tN\\t1000\\t%s\\n%s\\t%s\\t%s\\tN\\t1000\\t%s\\n", $1,$2,$3,$9,$4,$5,$6,$10}}' \
+        | shuf -n {SUBSAMPLE} --random-source=<(openssl enc -aes-256-ctr -pass pass:$(zcat -f {output.bedpe} | wc -c) -nosalt </dev/zero 2>/dev/null) \
+        | pigz -p {threads} -nc > {output.tag_subsample}
         """
 
 
@@ -697,8 +698,8 @@ zcat {output.bedpe} \
 #     input:
 #         tag = rules.bam_to_tag.output.tag
 #     output:
-#         pr1 = "tagAlign/{sample}.pr1.SE.tagAlign.gz",
-#         pr2 = "tagAlign/{sample}.pr2.SE.tagAlign.gz"
+#         pr1 = "tagAlign/{sample}.SE.pr1.tagAlign.gz",
+#         pr2 = "tagAlign/{sample}.SE.pr2.tagAlign.gz"
 #     shell:
 #         """
 #         nlines=$(zcat {input.tag} | wc -l)
@@ -713,8 +714,8 @@ rule spr_PE:
     input:
         tag = rules.bam_to_tag_PE.output.tag
     output:
-        pr1 = "tagAlign/{sample}.PE.pr1.tagAlign.gz",
-        pr2 = "tagAlign/{sample}.PE.pr2.tagAlign.gz"
+        pr1 = "tagAlign/{sample}.PE2SE.pr1.tagAlign.gz",
+        pr2 = "tagAlign/{sample}.PE2SE.pr2.tagAlign.gz"
     threads: THREADS
     resources:
         mem_mb=MEM_MB
@@ -724,8 +725,8 @@ rule spr_PE:
         """
         mkdir -p tagAlign
         PR_PREFIX="tagAlign/{wildcards.sample}.filt.nodup"
-        PR1_TA_FILE="tagAlign/{wildcards.sample}.PE.pr1.tagAlign.gz"
-        PR2_TA_FILE="tagAlign/{wildcards.sample}.PE.pr2.tagAlign.gz"
+        PR1_TA_FILE="tagAlign/{wildcards.sample}.PE2SE.pr1.tagAlign.gz"
+        PR2_TA_FILE="tagAlign/{wildcards.sample}.PE2SE.pr2.tagAlign.gz"
         joined="tagAlign/{wildcards.sample}.temp.bedpe"
 
         # Create pseudo-BEDPE by combining every two lines into one
@@ -752,6 +753,11 @@ rule spr_PE:
         """
 
 
+#######
+# NOTE: From now on, there will NOT be any PE vs SE distinction. All reads in TagAlign format will be treated as single-end reads. (Which makes sense for ATAC-seq data)
+# This is how ENCODE ATAC-seq pipeline works.
+#######
+
 ############################################################
 #  2d. Pooled replicates + pseudoreps               
 ############################################################
@@ -762,7 +768,7 @@ rule poll_fullTA:
     input:
         full_TA = lambda wc: expand("tagAlign/{sample}.PE.tagAlign.gz", sample=SAMPLES[{wc.condition}])
     output:
-        pooled = "tagAlign/{condition}.pooled.PE.tagAlign.gz"
+        pooled = "tagAlign/{condition}.pooled.tagAlign.gz"
     threads: THREADS
     resources:
         mem_mb=MEM_MB
@@ -778,11 +784,11 @@ rule poll_fullTA:
 
 rule poll_PRs:
     input:
-        pr1    = lambda wc: expand("tagAlign/{sample}.PE.pr1.tagAlign.gz", sample=SAMPLES[{wc.condition}]),
-        pr2    = lambda wc: expand("tagAlign/{sample}.PE.pr2.tagAlign.gz", sample=SAMPLES[{wc.condition}])
+        pr1    = lambda wc: expand("tagAlign/{sample}.PE2SE.pr1.tagAlign.gz", sample=SAMPLES[{wc.condition}]),
+        pr2    = lambda wc: expand("tagAlign/{sample}.PE2SE.pr2.tagAlign.gz", sample=SAMPLES[{wc.condition}])
     output:
-        ppr1   = "tagAlign/{condition}.pooled.PE.pr1.tagAlign.gz",
-        ppr2   = "tagAlign/{condition}.pooled.PE.pr2.tagAlign.gz"
+        ppr1   = "tagAlign/{condition}.pooled.pr1.tagAlign.gz",
+        ppr2   = "tagAlign/{condition}.pooled.pr2.tagAlign.gz"
     threads: THREADS
     resources:
         mem_mb=MEM_MB
@@ -804,9 +810,9 @@ rule poll_PRs:
 
 rule tn5_shift:
     input:
-        tag = "tagAlign/{sample}.{suffix}.tagAlign.gz"
+        tag = "tagAlign/{sample}.PE.tagAlign.gz"
     output:
-        shifted = "tagAlign/{sample}.{suffix}.tn5.tagAlign.gz"
+        shifted = "tagAlign/{sample}.tn5.tagAlign.gz"
     threads: THREADS
     resources:
         mem_mb=MEM_MB
@@ -819,6 +825,57 @@ rule tn5_shift:
           | gzip -nc > {output.shifted}
         """
 
+rule tn5_shift_pr:
+    input:
+        tag1 = "tagAlign/{sample}.PE2SE.pr1.tagAlign.gz",
+        tag2 = "tagAlign/{sample}.PE2SE.pr2.tagAlign.gz"
+    output:
+        shifted1 = "tagAlign/{sample}.pr1.tn5.tagAlign.gz",
+        shifted2 = "tagAlign/{sample}.pr2.tn5.tagAlign.gz"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        zcat {input.tag1} \
+          | awk -F '\\t' 'BEGIN{{OFS=FS}}{{if($6=="+"){{$2+=4}} else if($6=="-"){{$3-=5}} print}}' \
+          | gzip -nc > {output.shifted1}
+        zcat {input.tag2} \
+          | awk -F '\\t' 'BEGIN{{OFS=FS}}{{if($6=="+"){{$2+=4}} else if($6=="-"){{$3-=5}} print}}' \
+          | gzip -nc > {output.shifted2}
+        """
+
+
+rule tn5_shift_pooled:
+    input:
+        tag = "tagAlign/{condition}.pooled.tagAlign.gz",
+        tag1 = "tagAlign/{condition}.pooled.pr1.tagAlign.gz",
+        tag2 = "tagAlign/{condition}.pooled.pr2.tagAlign.gz"
+    output:
+        shifted = "tagAlign/{condition}.pooled.tn5.tagAlign.gz",
+        shifted1 = "tagAlign/{condition}.pooled.pr1.tn5.tagAlign.gz",
+        shifted2 = "tagAlign/{condition}.pooled.pr2.tn5.tagAlign.gz"
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        zcat {input.tag} \
+          | awk -F '\\t' 'BEGIN{{OFS=FS}}{{if($6=="+"){{$2+=4}} else if($6=="-"){{$3-=5}} print}}' \
+          | gzip -nc > {output.shifted}
+
+        zcat {input.tag1} \
+          | awk -F '\\t' 'BEGIN{{OFS=FS}}{{if($6=="+"){{$2+=4}} else if($6=="-"){{$3-=5}} print}}' \
+          | gzip -nc > {output.shifted1}
+
+        zcat {input.tag2} \
+          | awk -F '\\t' 'BEGIN{{OFS=FS}}{{if($6=="+"){{$2+=4}} else if($6=="-"){{$3-=5}} print}}' \
+          | gzip -nc > {output.shifted2}
+        """
 
 ############################################################
 #  2f. JSD (plotFingerprint)                           
@@ -888,7 +945,7 @@ rule tn5_shift:
 
 rule macs2_callpeak:
     input:
-        tag = "tagAlign/{sample}.PE.tn5.tagAlign.gz"
+        tag = "tagAlign/{sample}.tn5.tagAlign.gz"
     output:
         raw_narrow = "macs2_temp/{sample}_peaks.narrowPeak",
         treat_bdg = "macs2_temp/{sample}_treat_pileup.bdg",
@@ -957,7 +1014,7 @@ rule macs2_make_fc_bw:
 
 rule macs2_make_pval_bw:
     input:
-        tag = "tagAlign/{sample}.PE.tn5.tagAlign.gz",
+        tag = "tagAlign/{sample}.tn5.tagAlign.gz",
         treat = "macs2_temp/{sample}_treat_pileup.bdg",
         control = "macs2_temp/{sample}_control_lambda.bdg"
     output:
