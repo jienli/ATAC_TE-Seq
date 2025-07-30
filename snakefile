@@ -45,7 +45,7 @@ CHRSIZES    = config["chrom_sizes"]
 SUBSAMPLE   = config.get("subsample_reads", 25000000)
 THREADS     = config.get("threads", 8)
 MEM_MB      = config.get("mem_mb", 8000)
-# IDR_THRESH  = config.get("idr_threshold", 0.05)
+IDR_THRESH  = config.get("idr_threshold", 0.05)
 SMOOTH_WIN  = config.get("smooth_window", 150)
 
 ADAPTOR_ERR_RATE = config.get("adaptor_err_rate", 0.2)
@@ -153,6 +153,9 @@ rule detect_adapter:
 ############################################################
 
 rule trim_adapters_SE:
+    # prevent wildcard matching for .R1 and .R2 suffixes (which should go to trim_adapters_PE)
+    wildcard_constraints:
+        sample=r"(?!.*\.R[12]).+"
     input:
         fastq = lambda wc: os.path.join(SAMPLES_FASTQ_DIR, f"{wc.sample}.fastq.gz"),
         adapter = rules.detect_adapter.output
@@ -739,16 +742,16 @@ rule spr_PE:
         # Shuffle and split BEDPE into two parts
         zcat $joined | shuf --random-source=<(openssl enc -aes-256-ctr -pass pass:$(zcat -f {input.tag} | wc -c) -nosalt </dev/zero 2>/dev/null) \
           | split -d -l $nlines $PR_PREFIX
-        # this will create two files: {PR_PREFIX}00 and {PR_PREFIX}01
+        # this will create two files: {{PR_PREFIX}}00 and {{PR_PREFIX}}01
 
         # Convert each half to tagAlign format
-        awk 'BEGIN{{OFS="\\t"}}{{printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n", $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12}}' ${PR_PREFIX}00 \
+        awk 'BEGIN{{OFS="\\t"}}{{printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n", $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12}}' ${{PR_PREFIX}}00 \
           | gzip -nc > $PR1_TA_FILE
-        rm ${PR_PREFIX}00
+        rm ${{PR_PREFIX}}00
 
-        awk 'BEGIN{{OFS="\\t"}}{{printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n", $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12}}' ${PR_PREFIX}01 \
+        awk 'BEGIN{{OFS="\\t"}}{{printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n", $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12}}' ${{PR_PREFIX}}01 \
           | gzip -nc > $PR2_TA_FILE
-        rm ${PR_PREFIX}01
+        rm ${{PR_PREFIX}}01
         rm $joined
         """
 
@@ -766,7 +769,7 @@ rule spr_PE:
 # TODO: this is wrong for now, Need to update smaple sheet and use that info to pool the right samples
 rule poll_fullTA:
     input:
-        full_TA = lambda wc: expand("tagAlign/{sample}.PE.tagAlign.gz", sample=SAMPLES[{wc.condition}])
+        full_TA = lambda wc: expand("tagAlign/{sample}.PE.tagAlign.gz", sample=SAMPLES[wc.condition])
     output:
         pooled = "tagAlign/{condition}.pooled.tagAlign.gz"
     threads: THREADS
@@ -784,8 +787,8 @@ rule poll_fullTA:
 
 rule poll_PRs:
     input:
-        pr1    = lambda wc: expand("tagAlign/{sample}.PE2SE.pr1.tagAlign.gz", sample=SAMPLES[{wc.condition}]),
-        pr2    = lambda wc: expand("tagAlign/{sample}.PE2SE.pr2.tagAlign.gz", sample=SAMPLES[{wc.condition}])
+        pr1    = lambda wc: expand("tagAlign/{sample}.PE2SE.pr1.tagAlign.gz", sample=SAMPLES[wc.condition]),
+        pr2    = lambda wc: expand("tagAlign/{sample}.PE2SE.pr2.tagAlign.gz", sample=SAMPLES[wc.condition])
     output:
         ppr1   = "tagAlign/{condition}.pooled.pr1.tagAlign.gz",
         ppr2   = "tagAlign/{condition}.pooled.pr2.tagAlign.gz"
@@ -809,6 +812,12 @@ rule poll_PRs:
 ############################################################
 
 rule tn5_shift:
+    # prevent wildcard matching for pooled samples or pr samples
+    wildcard_constraints:
+        # sample=r"^(?!.*\.pooled)(?!.*\.pr[12]$).+"
+        sample=r"(?!.*\.(?:pooled|pr[12])).+"
+        # sample = "[^.]+"
+        # sample = "(SRR13601448|SRR13601447)"
     input:
         tag = "tagAlign/{sample}.PE.tagAlign.gz"
     output:
@@ -826,6 +835,9 @@ rule tn5_shift:
         """
 
 rule tn5_shift_pr:
+    # prevent wildcard matching for pooled samples
+    wildcard_constraints:
+        sample=r"(?!.*\.pooled).+"
     input:
         tag1 = "tagAlign/{sample}.PE2SE.pr1.tagAlign.gz",
         tag2 = "tagAlign/{sample}.PE2SE.pr2.tagAlign.gz"
@@ -1100,6 +1112,215 @@ rule macs2_make_pval_bw:
 #         """
 
 
+
+
+
+
+############################################################
+#  4. IDR (true & pseudo)
+############################################################
+
+# IDR helper for true replicate pairs
+import itertools
+import math
+
+def get_true_pairs(condition):
+    samples = SAMPLES[condition]
+    if len(samples) < 2:
+        raise ValueError(f"Condition {condition} has fewer than two replicates for IDR.")
+    return list(itertools.combinations(samples, 2))
+
+rule idr_true_pair:
+    """
+    Run IDR on each pair of true replicates for a condition.
+    """
+    input:
+        peak1=lambda wc: f"peaks/{wc.rep1}.narrowPeak.gz",
+        peak2=lambda wc: f"peaks/{wc.rep2}.narrowPeak.gz",
+        pooled="peaks/{condition}.pooled.narrowPeak.gz"
+    output:
+        idr_txt="idr/{condition}.{rep1}-{rep2}.rep.idr.txt"
+    params:
+        idr_thresh=IDR_THRESH
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "idr_env"
+    shell:
+        """
+        mkdir -p idr
+        idr --samples {input.peak1} {input.peak2} \
+            --peak-list {input.pooled} \
+            --input-file-type narrowPeak \
+            --rank p.value \
+            --soft-idr-threshold {params.idr_thresh} \
+            --output-file {output.idr_txt}
+        """
+
+rule idr_pooled_pseudoreps:
+    """
+    Run IDR on the pooled pseudoreplicates for each condition.
+    """
+    input:
+        ppr1="peaks/{condition}.pooled.pr1.narrowPeak.gz",
+        ppr2="peaks/{condition}.pooled.pr2.narrowPeak.gz",
+        pooled="peaks/{condition}.pooled.narrowPeak.gz"
+    output:
+        idr_txt="idr/{condition}.ppr.idr.txt"
+    params:
+        idr_thresh=IDR_THRESH
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "idr_env"
+    shell:
+        """
+        mkdir -p idr
+        idr --samples {input.ppr1} {input.ppr2} \
+            --peak-list {input.pooled} \
+            --input-file-type narrowPeak \
+            --rank p.value \
+            --soft-idr-threshold {params.idr_thresh} \
+            --output-file {output.idr_txt}
+        """
+
+rule idr_self_pseudoreps:
+    """
+    Run IDR on the pooled pseudoreplicates for each condition.
+    """
+    input:
+        pr1="peaks/{sample}.pr1.narrowPeak.gz",
+        pr2="peaks/{sample}.pr2.narrowPeak.gz",
+        peak="peaks/{sample}.narrowPeak.gz"
+    output:
+        idr_txt="idr/{sample}.selfpr.idr.txt"
+    params:
+        idr_thresh=IDR_THRESH
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "idr_env"
+    shell:
+        """
+        mkdir -p idr
+        idr --samples {input.pr1} {input.pr2} \
+            --peak-list {input.peak} \
+            --input-file-type narrowPeak \
+            --rank p.value \
+            --soft-idr-threshold {params.idr_thresh} \
+            --output-file {output.idr_txt}
+        """
+
+rule idr_finalize:
+    """
+    Generate conservative and optimal peak sets based on IDR results
+    from true replicates and pseudoreplicates.
+    """
+    input:
+        pooled="peaks/{condition}.pooled.narrowPeak.gz",
+        rep_idrs=lambda wc: [
+            f"idr/{wc.condition}.{a}-{b}.rep.idr.txt"
+            for a, b in get_true_pairs(wc.condition)
+        ],
+        ppr_idr="idr/{condition}.ppr.idr.txt"
+    output:
+        cons="idr/{condition}.pooled.conservative.narrowPeak.gz",
+        ppr_set="idr/{condition}.pooled.pprset.narrowPeak.gz",
+        opt="idr/{condition}.pooled.optimal.narrowPeak.gz"
+    params:
+        idr_thresh=IDR_THRESH
+    threads: THREADS
+    resources:
+        mem_mb=MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        mkdir -p idr
+        IDR_THRESH_TRANSFORMED=$(awk -v p={params.idr_thresh} 'BEGIN{{print -log(p)/log(10)}}')
+        # Determine best true-replicate pair by IDR peak count
+        best=$(for f in {input.rep_idrs}; do
+            c=$(awk 'NR>1 && $12>=IDR_THRESH_TRANSFORMED {{c++}} END {{print c}}' $f)
+            echo -e "$c\t$f"
+        done | sort -k1,1nr | head -n1 | cut -f2)
+        # Convert the selected IDR result to narrowPeak for the conservative set
+        awk -v t=$IDR_THRESH_TRANSFORMED 'BEGIN{{OFS="\t"}} $12>=t {{print $1,$2,$3,$4,$5,$6,$7,$8,$9,$10}}' $best \
+            | sort | uniq | gzip -nc > {output.cons}
+
+        # Convert the pseudoreplicate IDR result to narrowPeak for the ppr set
+        awk -v t=$IDR_THRESH_TRANSFORMED 'BEGIN{{OFS="\t"}} $12>=t {{print $1,$2,$3,$4,$5,$6,$7,$8,$9,$10}}' {input.ppr_idr} \
+            | sort | uniq | gzip -nc > {output.ppr_set}
+
+        # The optimal set is the set with the longest IDR peak count between the conservative set and the pseudoreplicate set
+        n_cons=$(zcat {output.cons} | wc -l)
+        n_ppr=$(zcat {output.ppr_set} | wc -l)
+        if [ "$n_cons" -ge "$n_ppr" ]; then
+            cp {output.cons} {output.opt}
+        else
+            cp {output.ppr_set} {output.opt}
+        fi
+        """
+
+
+rule idr_qc:
+    """
+    Compute IDR QC metrics:
+      N1/N2 = number of peaks passing threshold in each replicate’s self-pseudo-replicate IDR
+      Nt     = peak count from best true-replicate IDR (conservative set)
+      Np     = peak count from pooled pseudo-replicate IDR
+    Then:
+      RescueRatio = max(Nt,Np)/min(Nt,Np)
+      SelfRatio   = max(N1,N2)/min(N1,N2)
+      FLAG = -1 if both ratios >2, 0 if either >2, else 1
+    """
+    input:
+        cons    = "idr/{condition}.pooled.conservative.narrowPeak.gz",
+        ppr_set = "idr/{condition}.pooled.pprset.narrowPeak.gz",
+        self_pr = lambda wc: expand("idr/{sample}.selfpr.idr.txt", sample=SAMPLES[wc.condition])
+    output:
+        idr_qc = "idr/{condition}_qc.txt"
+    params:
+        idr_thresh = IDR_THRESH
+    threads: THREADS
+    resources:
+        mem_mb = MEM_MB
+    conda:
+        "ATAC_Core"
+    shell:
+        """
+        mkdir -p idr
+        # transform p‐value threshold to –log10 scale for column 12
+        IDR_THRESH_TRANS=$(awk -v p={params.idr_thresh} 'BEGIN{{print -log(p)/log(10)}}')
+
+        # counts for conservative (Nt) and pooled pseudo (Np) sets
+        Nt=$(zcat {input.cons}    | wc -l)
+        Np=$(zcat {input.ppr_set} | wc -l)
+
+        # self‐consistency counts for all replicates
+        self_prs=({input.self_pr})
+        self_counts=()
+        for f in "${self_prs[@]}"; do
+            c=$(awk 'NR>1 && $12>=IDR_THRESH_TRANS{{c++}} END{{print c}}' "$f")
+            self_counts+=("$c")
+        done
+        # join counts with comma
+        SC=$(IFS=,; echo "${self_counts[*]}")
+
+        # compute ratios
+        RescueRatio=$(awk -v n1=$Nt -v n2=$Np 'BEGIN{{print (n2>n1?n2:n1)/(n2<n1?n2:n1)}}')
+        SelfRatio=$(awk -v s="$SC" 'BEGIN{{split(s,a,","); min=a[1]; max=a[1]; for(i in a){{if(a[i]<min)min=a[i]; if(a[i]>max)max=a[i]}}; print max/min}}')
+
+        # flag reproducibility: -1=FAIL, 0=Borderline, 1=PASS
+        FLAG=$(awk -v rr=$RescueRatio -v sr=$SelfRatio 'BEGIN{{if(rr>2 && sr>2) print -1; else if(rr>2 || sr>2) print 0; else print 1}}')
+
+        # write header and metrics
+        echo -e "self_counts\tNt\tNp\tRescueRatio\tSelfConsistencyRatio\tFlag" > {output.idr_qc}
+        echo -e "$SC\t$Nt\t$Np\t$RescueRatio\t$SelfRatio\t$FLAG" >> {output.idr_qc}
+        """
+
 ############################################################
 #  Differential Accessibility Analysis
 ############################################################
@@ -1108,7 +1329,8 @@ rule macs2_make_pval_bw:
 rule consensus_peaks:
     input:
         # All narrowPeak.gz for all samples in both groups
-        peaks = expand("peaks/{sample}.narrowPeak.gz", sample=SAMPLES_flat)
+        # peaks = expand("peaks/{sample}.narrowPeak.gz", sample=SAMPLES_flat)
+        peaks = expand("idr/{condition}.pooled.optimal.narrowPeak.gz", condition=SAMPLES)
     output:
         consensus = "analysis/consensus_peaks.bed"
     threads: THREADS
@@ -1119,7 +1341,7 @@ rule consensus_peaks:
     shell:
         """
         mkdir -p diff
-        pigz -p $(( {threads} / 3 )) -dc peaks/*.narrowPeak.gz | cut -f1-3 | sort --parallel=$(( {threads} / 3 )) -k1,1 -k2,2n | bedtools merge -i - > {output.consensus}
+        pigz -p $(( {threads} / 3 )) -dc {input.peaks} | cut -f1-3 | sort --parallel=$(( {threads} / 3 )) -k1,1 -k2,2n | bedtools merge -i - > {output.consensus}
         """
 
 # 2. Generate count matrix for consensus peaks
@@ -1245,31 +1467,6 @@ rule analyze_peak_enrichment_deseq2:
         """
 
 
-
-############################################################
-#  4. IDR (true & pseudo)                              
-############################################################
-
-# rule idr:
-#     input:
-#         peak1 = rules.macs2_narrow.output.narrow.replace("{sample}","rep1"),
-#         peak2 = rules.macs2_narrow.output.narrow.replace("{sample}","rep2"),
-#         pooled= "peaks/pooled.narrowPeak.gz"
-#     output:
-#         cons = "idr/pooled.conservative.narrowPeak.gz",
-#         opt  = "idr/pooled.optimal.narrowPeak.gz"
-#     threads: THREADS
-#     shell:
-#         """
-#         idr --samples {input.peak1} {input.peak2} \
-#           --pooled {input.pooled} --output-file tmp.idr.txt \
-#           --rank signal.value --idr-threshold {IDR_THRESH}
-
-#         # select conservative (longest list) and optimal sets:
-#         sort -k7gr tmp.idr.txt | head -n {…} \
-#           | gzip -nc > {output.cons}
-#         # similarly for optimal…
-#         """
 
 
 ############################################################
