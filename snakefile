@@ -120,7 +120,8 @@ rule all:
         expand("tracks/{sample}.fc.signal.bw", sample=SAMPLES_flat_),
         expand("tracks/{sample}.pval.signal.bw", sample=SAMPLES_flat_),
         "analysis/counts.tsv",
-        "analysis/merged_results_count.csv"
+        "analysis/merged_results_count.csv",
+        expand("idr/{condition}_qc.txt", condition=SAMPLES)
 
 ############################################################
 #  0a. Adapter detection                              
@@ -446,12 +447,112 @@ rule frac_mito:
 #         """
 
     
-# Step 1: Filter and name-sort paired reads
-rule filter_pairs_PE_dedup1:
+# # Step 1: Filter and name-sort paired reads
+# rule filter_pairs_PE_dedup1:
+#     input:
+#         bam = "aligned/{sample}.PE.bam"
+#     output:
+#         nmsrt = "filtered/{sample}.nmsrt.bam"
+#     threads: THREADS
+#     resources:
+#         mem_mb = MEM_MB
+#     params:
+#         MAPQ_THRESH = 20
+#     conda:
+#         "ATAC_Core"
+#     shell:
+#         """
+#         m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
+#         samtools view -F 524 -f 2 -u {input.bam} \
+#             | samtools sort -n -@ {threads} -m $m_per_thread -o {output.nmsrt}
+#         """
+
+# # Step 2: Assign multimappers and fixmate
+# rule assign_multimappers_PE_dedup2:
+#     input:
+#         nmsrt = rules.filter_pairs_PE_dedup1.output.nmsrt
+#     output:
+#         fixmate = "filtered/{sample}.fixmate.bam"
+#     threads: THREADS
+#     conda:
+#         "ATAC_Core"
+#     shell:
+#         """
+#         # samtools view -h {input.nmsrt} \
+#         #     | python3 {config[my_script_dir]}/assign_multimappers.py -k 1 --paired-end \
+#         #     | samtools fixmate - {output.fixmate}
+#         samtools view -h -F 780 {input.nmsrt} \
+#             | samtools fixmate - {output.fixmate}
+#         """
+#         # This assign_multimappers.py script is a custom script that caps multimappers to 1 loci by randomly assigning one of the loci to the read.
+
+# # Step 3: Remove orphans and coordinate-sort
+# rule sort_coord_PE_dedup3:
+#     input:
+#         nmsrt = rules.filter_pairs_PE_dedup1.output.nmsrt,
+#         fixmate = rules.assign_multimappers_PE_dedup2.output.fixmate
+#     output:
+#         filt = "filtered/{sample}.filt.bam"
+#     threads: THREADS
+#     resources:
+#         mem_mb = MEM_MB
+#     conda:
+#         "ATAC_Core"
+#     shell:
+#         """
+#         m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
+#         samtools view -F 524 -f 2 -u {input.fixmate} \
+#             | samtools sort -@ {threads} -m $m_per_thread -o {output.filt}
+#         rm {input.nmsrt} {input.fixmate}
+#         """
+
+# # Step 4: Mark PCR duplicates
+# rule mark_duplicates_PE_dedup4:
+#     input:
+#         filt = rules.sort_coord_PE_dedup3.output.filt
+#     output:
+#         dupmark = "filtered/{sample}.dupmark.bam",
+#         dup_metrics = "qc/{sample}.PE.dup.qc"
+#     threads: THREADS
+#     conda:
+#         "ATAC_Core"
+#     shell:
+#         """
+#         java -Xmx4G -jar {config[picard]} MarkDuplicates \
+#             INPUT={input.filt} OUTPUT={output.dupmark} METRICS_FILE={output.dup_metrics} \
+#             VALIDATION_STRINGENCY=LENIENT ASSUME_SORTED=true REMOVE_DUPLICATES=false
+#         """
+#         # picard MarkDuplicates requires position sorted BAM, so we need to sort the input BAM by name first
+
+# # Step 5: Filter duplicates to final BAM
+# rule filter_dups_PE_dedup5:
+#     input:
+#         dupmark = rules.mark_duplicates_PE_dedup4.output.dupmark
+#     output:
+#         final_bam = "filtered/{sample}.PE.final.bam"
+#     threads: THREADS
+#     resources:
+#         mem_mb = MEM_MB
+#     conda:
+#         "ATAC_Core"
+#     shell:
+#         """
+#         m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
+
+#         # samtools view -F 1548 -f 2 -b {input.dupmark} > {output.final_bam}
+#         samtools view -F 1548 -f 2 -u {input.dupmark} | samtools sort -@ {threads} -m $m_per_thread -o {output.final_bam}
+#         rm {input.dupmark}
+#         """
+
+
+# Step 1: Filter for good read pairs and mark PCR duplicates with picard
+rule filter_markDup_PE_dedup1:
     input:
         bam = "aligned/{sample}.PE.bam"
     output:
-        nmsrt = "filtered/{sample}.nmsrt.bam"
+        dupmark = temp("filtered/{sample}.dupmark.bam"),
+        dup_metrics = "qc/{sample}.PE.dup.qc",
+        filt_1 = temp("filtered/{sample}.filt_1.bam")
     threads: THREADS
     resources:
         mem_mb = MEM_MB
@@ -461,37 +562,20 @@ rule filter_pairs_PE_dedup1:
         "ATAC_Core"
     shell:
         """
-        m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
-        samtools view -F 524 -f 2 -u {input.bam} \
-            | samtools sort -n -@ {threads} -m $m_per_thread -o {output.nmsrt}
+        samtools view -F 524 -f 2 -u {input.bam} -o {output.filt_1}
+
+        java -Xmx4G -jar {config[picard]} MarkDuplicates \
+            INPUT={output.filt_1} OUTPUT={output.dupmark} METRICS_FILE={output.dup_metrics} \
+            VALIDATION_STRINGENCY=LENIENT ASSUME_SORTED=true REMOVE_DUPLICATES=false
         """
 
-# Step 2: Assign multimappers and fixmate
-rule assign_multimappers_PE_dedup2:
-    input:
-        nmsrt = rules.filter_pairs_PE_dedup1.output.nmsrt
-    output:
-        fixmate = "filtered/{sample}.fixmate.bam"
-    threads: THREADS
-    conda:
-        "ATAC_Core"
-    shell:
-        """
-        # samtools view -h {input.nmsrt} \
-        #     | python3 {config[my_script_dir]}/assign_multimappers.py -k 1 --paired-end \
-        #     | samtools fixmate - {output.fixmate}
-        samtools view -h -F 780 {input.nmsrt} \
-            | samtools fixmate - {output.fixmate}
-        """
-        # This assign_multimappers.py script is a custom script that caps multimappers to 1 loci by randomly assigning one of the loci to the read.
 
-# Step 3: Remove orphans and coordinate-sort
-rule sort_coord_PE_dedup3:
+# Step 2: (optional filter PCR duplicates) and name-sort paired reads
+rule filter_nmsrt_PE_dedup2:
     input:
-        nmsrt = rules.filter_pairs_PE_dedup1.output.nmsrt,
-        fixmate = rules.assign_multimappers_PE_dedup2.output.fixmate
+        dupmark = rules.filter_markDup_PE_dedup1.output.dupmark,
     output:
-        filt = "filtered/{sample}.filt.bam"
+        nmsrt = temp("filtered/{sample}.nmsrt.bam")
     threads: THREADS
     resources:
         mem_mb = MEM_MB
@@ -500,33 +584,41 @@ rule sort_coord_PE_dedup3:
     shell:
         """
         m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
-        samtools view -F 524 -f 2 -u {input.fixmate} \
-            | samtools sort -@ {threads} -m $m_per_thread -o {output.filt}
-        rm {input.nmsrt} {input.fixmate}
+        samtools view -F 1548 -f 2 -u {input.dupmark} \
+            | samtools sort -n -@ {threads} -m $m_per_thread -o {output.nmsrt}
+
+        # # Use following lines instead if you want to filter out Duplicates after multimapping assignment
+        # samtools view -F 524 -f 2 -u {input.dupmark} \
+        #     | samtools sort -n -@ {threads} -m $m_per_thread -o {output.nmsrt}
         """
 
-# Step 4: Mark PCR duplicates
-rule mark_duplicates_PE_dedup4:
+
+# Step 3: Assign multimappers and fixmate
+rule assign_multimappers_PE_dedup3:
     input:
-        filt = rules.sort_coord_PE_dedup3.output.filt
+        nmsrt = rules.filter_nmsrt_PE_dedup2.output.nmsrt
     output:
-        dupmark = "filtered/{sample}.dupmark.bam",
-        dup_metrics = "qc/{sample}.PE.dup.qc"
+        multi_assigned = "filtered/{sample}.multi_assigned.bam"
     threads: THREADS
     conda:
         "ATAC_Core"
     shell:
         """
-        java -Xmx4G -jar {config[picard]} MarkDuplicates \
-            INPUT={input.filt} OUTPUT={output.dupmark} METRICS_FILE={output.dup_metrics} \
-            VALIDATION_STRINGENCY=LENIENT ASSUME_SORTED=true REMOVE_DUPLICATES=false
-        """
-        # picard MarkDuplicates requires position sorted BAM, so we need to sort the input BAM by name first
+        # This assign_multimappers.py script is a custom script that caps multimappers to 1 loci by randomly assigning one of the loci to the read.
+        # samtools view -h {input.nmsrt} \
+        #     | python3 {config[my_script_dir]}/assign_multimappers.py -k 1 --paired-end \
+        #     | samtools fixmate - {output.multi_assigned}
 
-# Step 5: Filter duplicates to final BAM
-rule filter_dups_PE_dedup5:
+        # NOTE: This keeps only primary alignments and removes secondary alignments
+        samtools view -h -F 780 {input.nmsrt} \
+            | samtools fixmate - {output.multi_assigned}
+        """
+
+
+# Step 4: Coordinate Sort to final BAM
+rule final_bam_PE_dedup4:
     input:
-        dupmark = rules.mark_duplicates_PE_dedup4.output.dupmark
+        multi_assigned = rules.assign_multimappers_PE_dedup3.output.multi_assigned
     output:
         final_bam = "filtered/{sample}.PE.final.bam"
     threads: THREADS
@@ -537,16 +629,14 @@ rule filter_dups_PE_dedup5:
     shell:
         """
         m_per_thread=$(( ({resources.mem_mb} * 7 / 10) / {threads} ))M
-
-        # samtools view -F 1548 -f 2 -b {input.dupmark} > {output.final_bam}
-        samtools view -F 1548 -f 2 -u {input.dupmark} | samtools sort -@ {threads} -m $m_per_thread -o {output.final_bam}
-        rm {input.dupmark}
+        samtools view -u {input.multi_assigned} | samtools sort -@ {threads} -m $m_per_thread -o {output.final_bam}
+        rm {input.multi_assigned}
         """
 
-# Step 6: Index final BAM
-rule index_final_PE_dedup6:
+# Step 65: Index final BAM
+rule index_finalBam_PE:
     input:
-        bam = rules.filter_dups_PE_dedup5.output.final_bam
+        bam = rules.final_bam_PE_dedup4.output.final_bam
     output:
         bai = "filtered/{sample}.PE.final.bam.bai"
     threads: THREADS
@@ -559,10 +649,10 @@ rule index_final_PE_dedup6:
         samtools index {input.bam}
         """
 
-# Step 7: Flagstat QC on deduplicated BAM
-rule flagstat_dedup_PE_dedup7:
+# Step 6: Flagstat QC on deduplicated BAM
+rule flagstat_dedup_PE:
     input:
-        bam = rules.filter_dups_PE_dedup5.output.final_bam
+        bam = rules.final_bam_PE_dedup4.output.final_bam
     output:
         flagstat = "qc/{sample}.PE.flagstat_dedup.qc"
     threads: THREADS
@@ -577,10 +667,10 @@ rule flagstat_dedup_PE_dedup7:
           | SAMstats --sorted_sam_file - --outf {output.flagstat}
         """
 
-# Step 8: Compute library complexity (PBC)
-rule pbc_PE_dedup8:
+# Step 7: Compute library complexity (PBC)
+rule pbc_LibComplexity_PE:
     input:
-        bam = rules.filter_dups_PE_dedup5.output.final_bam
+        bam = rules.final_bam_PE_dedup4.output.final_bam
     output:
         pbc = "qc/{sample}.PE.pbc.qc"
     threads: THREADS
@@ -640,7 +730,7 @@ rule pbc_PE_dedup8:
 ############################################################
 rule bam_to_tag_PE:
     input:
-        bam = rules.filter_dups_PE_dedup5.output.final_bam
+        bam = rules.final_bam_PE_dedup4.output.final_bam
     output:
         bedpe = "bedpe/{sample}.bedpe.gz",
         tag   = "tagAlign/{sample}.PE.tagAlign.gz",
@@ -741,7 +831,7 @@ rule spr_PE:
 
         # Shuffle and split BEDPE into two parts
         zcat $joined | shuf --random-source=<(openssl enc -aes-256-ctr -pass pass:$(zcat -f {input.tag} | wc -c) -nosalt </dev/zero 2>/dev/null) \
-          | split -d -l $nlines $PR_PREFIX
+          | split -d -l $nlines - $PR_PREFIX
         # this will create two files: {{PR_PREFIX}}00 and {{PR_PREFIX}}01
 
         # Convert each half to tagAlign format
@@ -968,9 +1058,9 @@ rule macs2_callpeak:
         genome_size = GENOME_SIZE,
         pval_thresh = MACS2_PVAL_THRESHOLD,
         smooth_win = SMOOTH_WIN
-    threads: THREADS
+    threads: 1
     resources:
-        mem_mb = MEM_MB
+        mem_mb = 20
     conda:
         "ATAC_Core"
     shell:
@@ -981,6 +1071,7 @@ rule macs2_callpeak:
             --shift $shiftsize --extsize {params.smooth_win} \
             --nomodel -B --SPMR --keep-dup all --call-summits
         """
+# NOTE: --call-summits is used to generate summit peaks, which can produce multiple entries for the same peak region. This will then be consolidated in the consensus peak calling step. (kinda useless, only affect is that it caps the 300k peaks based on #summits, but this is what the encode pipeline does)
 
 rule macs2_cap_peaks:
     input:
@@ -1302,12 +1393,12 @@ rule idr_qc:
         # self‐consistency counts for all replicates
         self_prs=({input.self_pr})
         self_counts=()
-        for f in "${self_prs[@]}"; do
+        for f in "${{self_prs[@]}}"; do
             c=$(awk 'NR>1 && $12>=IDR_THRESH_TRANS{{c++}} END{{print c}}' "$f")
             self_counts+=("$c")
         done
         # join counts with comma
-        SC=$(IFS=,; echo "${self_counts[*]}")
+        SC=$(IFS=,; echo "${{self_counts[*]}}")
 
         # compute ratios
         RescueRatio=$(awk -v n1=$Nt -v n2=$Np 'BEGIN{{print (n2>n1?n2:n1)/(n2<n1?n2:n1)}}')
